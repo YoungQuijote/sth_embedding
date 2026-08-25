@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .domain import JudgeCandidate, JudgeResult, MatchDecision
+from .domain import JudgeResult, MatchDecision, ScenarioJudgeCandidate
 
 
 class FakeJudge:
@@ -9,8 +9,16 @@ class FakeJudge:
     model_name = "deterministic-fake-judge"
     prompt_version = "v1-no-candidate-answers"
 
-    def judge(self, query: str, lane_context: list[str], candidates: list[JudgeCandidate]) -> JudgeResult:
+    def judge(self, query: str, candidates: list[ScenarioJudgeCandidate]) -> JudgeResult:
         if not candidates:
             return JudgeResult(MatchDecision.MISS, short_reason="no eligible candidate")
-        candidate = max(candidates, key=lambda item: item.score.total_log_score)
-        return JudgeResult(MatchDecision.MATCH, candidate.scenario_id, candidate.position, candidate.score.posterior, "highest calibrated scenario score")
+        scenario = max(candidates, key=lambda item: item.score)
+        candidate = max(scenario.positions, key=lambda item: item.score.total_log_score)
+        return JudgeResult(
+            MatchDecision.MATCH,
+            candidate.scenario_id,
+            candidate.position,
+            candidate.lane_id,
+            scenario.posterior,
+            "highest calibrated scenario and position-path score",
+        )

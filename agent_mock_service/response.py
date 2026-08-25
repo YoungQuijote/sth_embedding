@@ -8,11 +8,13 @@ from .domain import ResponseProtocol
 
 class ResponseRenderer(Protocol):
     protocol: ResponseProtocol
+
     def render(self, answer: str) -> tuple[Any, dict[str, str]]: ...
 
 
 class HttpJsonRenderer:
     protocol = ResponseProtocol.HTTP_JSON
+
     def render(self, answer: str) -> tuple[Any, dict[str, str]]:
         try:
             value = json.loads(answer)
@@ -23,8 +25,13 @@ class HttpJsonRenderer:
 
 class SseRenderer:
     protocol = ResponseProtocol.SSE
-    def render(self, answer: str) -> tuple[str, dict[str, str]]:
-        return f"data: {json.dumps({'answer': answer}, ensure_ascii=False)}\n\n", {"content-type": "text/event-stream", "cache-control": "no-cache"}
+
+    def render(self, answer: str) -> tuple[Any, dict[str, str]]:
+        # Wire streaming belongs to a transport adapter, not the runtime payload layer.
+        return {"answer": answer}, {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache",
+        }
 
 
 class ResponseRendererRegistry:
@@ -41,3 +48,8 @@ class ResponseRendererRegistry:
             return self._renderers[protocol]
         except KeyError as error:
             raise ValueError(f"no renderer registered for {protocol}") from error
+
+
+async def sse_event_stream(payload: Any):
+    """Yield SSE wire chunks lazily so ASGI transports never pre-buffer the response."""
+    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"

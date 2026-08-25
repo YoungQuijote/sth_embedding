@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Iterable, Mapping, Protocol, TypeVar
 
 from .domain import (
     FeatureRelation,
     FeatureSet,
-    JudgeCandidate,
+    ContextMessage,
     JudgeResult,
     MockSample,
     RequestAffinityInfo,
     Scenario,
+    ScenarioJudgeCandidate,
 )
 
 QueryInputT = TypeVar("QueryInputT", contravariant=True)
@@ -24,7 +26,9 @@ class EmbeddingEncoder(Protocol):
     version: str
     fingerprint: str
 
-    def encode(self, text: str) -> list[float]: ...
+    def encode_query(self, text: str) -> list[float]: ...
+    def encode_document(self, text: str) -> list[float]: ...
+    def encode_documents(self, texts: Sequence[str]) -> list[list[float]]: ...
 
 
 class BusinessFeatureExtractor(Protocol):
@@ -32,11 +36,13 @@ class BusinessFeatureExtractor(Protocol):
 
 
 class FeatureComparator(Protocol):
-    def compare(self, query: FeatureSet[Any, Any], candidate: FeatureSet[Any, Any]) -> tuple[FeatureRelation, float]: ...
+    def compare(
+        self, query: FeatureSet[Any, Any], candidate: FeatureSet[Any, Any]
+    ) -> tuple[FeatureRelation, float]: ...
 
 
 class ContextFusionProvider(Protocol):
-    def fuse(self, inputs: list[str]) -> str: ...
+    def fuse(self, inputs: Sequence[ContextMessage]) -> str: ...
 
 
 class AffinityExtractor(Protocol):
@@ -47,11 +53,13 @@ class Judge(Protocol):
     model_name: str
     prompt_version: str
 
-    def judge(self, query: str, lane_context: list[str], candidates: list[JudgeCandidate]) -> JudgeResult: ...
+    def judge(self, query: str, candidates: list[ScenarioJudgeCandidate]) -> JudgeResult: ...
 
 
 class SampleRepository(Protocol):
-    def register(self, sample: MockSample, affinity: RequestAffinityInfo | None = None) -> MockSample: ...
+    def register(
+        self, sample: MockSample, affinity: RequestAffinityInfo | None = None
+    ) -> MockSample: ...
     def list_endpoint(self, endpoint_id: str) -> list[MockSample]: ...
     def increment_invoked(self, sample_hash: str) -> None: ...
     def get_by_hash(self, sample_hash: str) -> MockSample | None: ...

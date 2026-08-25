@@ -5,10 +5,20 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from agent_mock_service.calibration import CalibrationBootstrapper, CalibrationProfile, fit_distribution
+from agent_mock_service.calibration import (
+    CalibrationBootstrapper,
+    CalibrationProfile,
+    fit_distribution,
+)
 from agent_mock_service.context import ScenarioContextBuilder
 from agent_mock_service.defaults import HashingEncoder, JoiningContextFusionProvider
-from agent_mock_service.domain import FeatureSet, MatchDecision, MockRequest, MockSample, RecallFusionMode
+from agent_mock_service.domain import (
+    FeatureSet,
+    MatchDecision,
+    MockRequest,
+    MockSample,
+    RecallFusionMode,
+)
 from agent_mock_service.lane import LaneManager
 from agent_mock_service.recall import fuse_recall
 from agent_mock_service.repository import SQLiteRepository, compute_sample_hash
@@ -25,13 +35,26 @@ def repository(tmp_path):
     value.close()
 
 
-def sample(query="query", answer="answer", scenario="1", round_id=1, position=1, endpoint="/agent", hard=None):
-    return MockSample(endpoint, query, answer, scenario, round_id, position, FeatureSet(hard or {}, {}))
+def sample(
+    query="query",
+    answer="answer",
+    scenario="1",
+    round_id=1,
+    position=1,
+    endpoint="/agent",
+    hard=None,
+):
+    return MockSample(
+        endpoint, query, answer, scenario, round_id, position, FeatureSet(hard or {}, {})
+    )
 
 
 def test_hash_and_duplicate_registration(repository):
     original = sample()
-    assert compute_sample_hash(original) == "fde8adf43498ca5f0f178d2bea1946cda41e0a5b5a6f75dd0311c20df9941170"
+    assert (
+        compute_sample_hash(original)
+        == "fde8adf43498ca5f0f178d2bea1946cda41e0a5b5a6f75dd0311c20df9941170"
+    )
     first = repository.register(original)
     second = repository.register(original)
     assert first.sample_hash == second.sample_hash
@@ -74,9 +97,19 @@ class KeywordEncoder:
     name = "keyword"
     version = "1"
     fingerprint = "keyword-v1"
+
     def encode(self, text):
         text = text.casefold()
         return [float("rome" in text or "罗马" in text), float("weather" in text or "天气" in text)]
+
+    def encode_query(self, text):
+        return self.encode(text)
+
+    def encode_document(self, text):
+        return self.encode(text)
+
+    def encode_documents(self, texts):
+        return [self.encode(text) for text in texts]
 
 
 def test_semantic_match_and_endpoint_hard_scope(repository):
@@ -90,10 +123,17 @@ def test_semantic_match_and_endpoint_hard_scope(repository):
 
 def test_hard_feature_conflict_eliminates_candidate(repository):
     repository.register(sample("device error", "E1 answer", scenario="e1", hard={"code": "E1"}))
-    repository.register(sample("device error", "E2 answer", scenario="e2", position=2, hard={"code": "E2"}))
+    repository.register(
+        sample("device error", "E2 answer", scenario="e2", position=2, hard={"code": "E2"})
+    )
+
     class Extractor:
-        def extract(self, query): return FeatureSet({"code": "E2"}, {})
-    response = AgentMockRuntime(repository, feature_extractor=Extractor()).handle(MockRequest("/agent", "which device error"))
+        def extract(self, query):
+            return FeatureSet({"code": "E2"}, {})
+
+    response = AgentMockRuntime(repository, feature_extractor=Extractor()).handle(
+        MockRequest("/agent", "which device error")
+    )
     assert response.body == {"answer": "E2 answer"}
 
 
@@ -139,6 +179,7 @@ def test_calibration_quantiles_smoothing_and_missing_data():
 
 def test_availability_is_soft():
     from agent_mock_service.domain import InvokeAvailability
+
     assert availability_prior(InvokeAvailability(1, 100)) == 0.0
     assert availability_prior(InvokeAvailability(10, 0)) == 1.0
 
@@ -148,9 +189,12 @@ def test_jsonl_trace_and_sse(repository, tmp_path):
     path = tmp_path / "trace.jsonl"
     runtime = AgentMockRuntime(repository, trace=JsonlTraceWriter(path))
     from agent_mock_service.domain import ResponseProtocol
-    response = runtime.handle(MockRequest("/agent", "query", response_protocol=ResponseProtocol.SSE))
+
+    response = runtime.handle(
+        MockRequest("/agent", "query", response_protocol=ResponseProtocol.SSE)
+    )
     assert response.headers["content-type"] == "text/event-stream"
-    assert response.body.startswith("data: ")
+    assert response.body == {"answer": "你好"}
     event = json.loads(path.read_text().splitlines()[0])
     assert event["request_id"].startswith("req_")
     assert event["selection"]["selected_sample_hash"]
@@ -158,8 +202,14 @@ def test_jsonl_trace_and_sse(repository, tmp_path):
 
 def test_recall_fusion_modes():
     from agent_mock_service.domain import ContextRecallCandidate, LocalRecallCandidate
-    local = [LocalRecallCandidate(str(i), "s", i, score, sample(position=i)) for i, score in enumerate([0.9, 0.7, 0.5])]
-    context = [ContextRecallCandidate("l", "s", i, score) for i, score in enumerate([0.8, 0.6, 0.4])]
+
+    local = [
+        LocalRecallCandidate(str(i), "s", i, score, sample(position=i))
+        for i, score in enumerate([0.9, 0.7, 0.5])
+    ]
+    context = [
+        ContextRecallCandidate("l", "s", i, score) for i, score in enumerate([0.8, 0.6, 0.4])
+    ]
     assert len(fuse_recall(local, context, RecallFusionMode.DOUBLE, 3)[0]) == 3
     assert fuse_recall(local, context, RecallFusionMode.SEMANTIC_ONLY, 2)[1] == []
     half = fuse_recall(local, context, RecallFusionMode.HALF, 3)

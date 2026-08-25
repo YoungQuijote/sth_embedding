@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 
 from .domain import RecallFusionMode, ResponseProtocol
 
+SENTENCE_TRANSFORMER_ENCODER: str | None = None
+
 
 @dataclass(slots=True)
 class RuntimeConfig:
@@ -17,6 +19,7 @@ class RuntimeConfig:
     availability_alpha: float = 1.0
     availability_gamma: float = 2.0
     default_response_protocol: ResponseProtocol = ResponseProtocol.HTTP_JSON
+    sentence_transformer_encoder: str | None = SENTENCE_TRANSFORMER_ENCODER
     transition_prior: dict[int, float] = field(
         default_factory=lambda: {-2: 0.0, -1: 0.1, 0: 1.0, 1: 0.9, 2: 0.5, 3: 0.3}
     )

@@ -25,6 +25,17 @@ print(response.body)
 FeatureComparator、ContextFusionProvider、AffinityExtractor 与 Judge。默认 hashing encoder
 仅用于无外部依赖的开发和测试；需要真正语义匹配时应注入业务 embedding encoder。
 
+可选安装真实语义模型或 FastAPI transport：
+
+```bash
+pip install 'agent-mock-service[semantic]'
+pip install 'agent-mock-service[api]'
+```
+
+通过 `RuntimeConfig(sentence_transformer_encoder="/local/model/path")` 加载本地
+SentenceTransformer；路径、依赖或模型不可用时会记录 warning 并安全回退 HashingEncoder。
+`create_fastapi_app(runtime)` 提供 JSON 与流式 SSE ASGI transport。
+
 ## v1 能力
 
 * SQLite endpoint 物理分表与 scenario membership 跨 endpoint 聚合；
@@ -33,6 +44,9 @@ FeatureComparator、ContextFusionProvider、AffinityExtractor 与 Judge。默认
 * local semantic / lane context recall 及五种 fusion mode；
 * quantile binning、Laplace smoothing、LLR calibration 与 Bayes-style scoring；
 * 内存 Lane、当前轮加下一轮滑动窗口和 TTL；
+* 同一 Scenario 的多 Lane runtime path、候选级 Lane context 隔离；
+* Endpoint 文档 embedding index 与 lazy Scenario context cache；
+* 从事实数据 bootstrap 并由 SQLite 持久化的 Calibration Profile；
 * deterministic FakeJudge 及可替换 LLM Judge contract；
 * HTTP JSON / SSE renderer；
 * MATCH、MISS、异常路径的 JSONL RuntimeTrace。

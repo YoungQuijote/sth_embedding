@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Generic, Mapping, TypeVar
+from typing import Any, Generic, Literal, Mapping, TypeVar
 
 HardFeaturesT = TypeVar("HardFeaturesT")
 SoftFeaturesT = TypeVar("SoftFeaturesT")
@@ -72,6 +72,12 @@ class ScenarioContext:
     raw_context: str
     fused_context: str
     embedding: list[float] | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ContextMessage:
+    role: Literal["question", "answer"]
+    content: str
 
 
 @dataclass(slots=True)
@@ -176,9 +182,10 @@ class ContextRecallCandidate:
 
 
 @dataclass(slots=True)
-class ScenarioScore:
+class PositionScore:
     scenario_id: str
     position: int
+    lane_id: str | None = None
     semantic_raw: float = 0.0
     context_raw: float = 0.0
     feature_raw: float = 0.0
@@ -194,13 +201,37 @@ class ScenarioScore:
 
 
 @dataclass(slots=True)
+class PositionPathEvidence:
+    scenario_id: str
+    position: int
+    lane_id: str | None
+    semantic_raw: float
+    context_raw: float
+    feature_raw: float
+    affinity_raw: float
+    round_id: str | int
+    availability: InvokeAvailability
+    active_rounds: set[str | int]
+
+
+@dataclass(slots=True)
 class JudgeCandidate:
     scenario_id: str
     position: int
+    lane_id: str | None
     endpoint_id: str
     mocked_query: str
-    score: ScenarioScore
-    context: str
+    score: PositionScore
+    scenario_context: str
+    runtime_context: str | None
+
+
+@dataclass(slots=True)
+class ScenarioJudgeCandidate:
+    scenario_id: str
+    score: float
+    posterior: float
+    positions: list[JudgeCandidate]
 
 
 @dataclass(slots=True)
@@ -208,6 +239,7 @@ class JudgeResult:
     decision: MatchDecision
     scenario_id: str | None = None
     position: int | None = None
+    lane_id: str | None = None
     confidence: float = 0.0
     short_reason: str = ""
     raw_output: str | None = None
