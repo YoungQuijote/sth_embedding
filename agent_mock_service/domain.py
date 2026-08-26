@@ -80,6 +80,27 @@ class ContextMessage:
     content: str
 
 
+@dataclass(slots=True, frozen=True)
+class CalibrationSample:
+    endpoint_id: str
+    mocked_query: str
+    mocked_answer: str
+    scenario_id: str
+    round_id: str | int
+    position_id: int
+    features: FeatureSet[Any, Any] = field(default_factory=lambda: FeatureSet({}, {}))
+
+
+@dataclass(slots=True)
+class CalibrationProbe:
+    """Extension point for future paraphrase and labelled RuntimeTrace calibration."""
+
+    query: str
+    expected_scenario_id: str
+    expected_positions: set[int]
+    runtime_history: list[ContextMessage] = field(default_factory=list)
+
+
 @dataclass(slots=True)
 class ScenarioPosition(Generic[HardFeaturesT, SoftFeaturesT]):
     scenario_id: str
@@ -186,7 +207,8 @@ class PositionScore:
     scenario_id: str
     position: int
     lane_id: str | None = None
-    semantic_raw: float = 0.0
+    scenario_semantic_raw: float = 0.0
+    position_semantic_raw: float = 0.0
     context_raw: float = 0.0
     feature_raw: float = 0.0
     affinity_raw: float = 0.0
@@ -205,7 +227,8 @@ class PositionPathEvidence:
     scenario_id: str
     position: int
     lane_id: str | None
-    semantic_raw: float
+    scenario_semantic_raw: float
+    position_semantic_raw: float
     context_raw: float
     feature_raw: float
     affinity_raw: float

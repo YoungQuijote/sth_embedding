@@ -7,6 +7,8 @@ from .domain import (
     FeatureRelation,
     FeatureSet,
     ContextMessage,
+    CalibrationProbe,
+    CalibrationSample,
     JudgeResult,
     MockSample,
     RequestAffinityInfo,
@@ -72,3 +74,13 @@ class ScenarioRepository(Protocol):
 
 class TraceWriter(Protocol):
     def write(self, event: Mapping[str, Any]) -> None: ...
+
+
+class CalibrationCorpusProvider(Protocol):
+    def load(self) -> Sequence[CalibrationSample]: ...
+
+
+class CalibrationProbeProvider(Protocol):
+    """V2 hook for labelled paraphrases or reconstructed RuntimeTrace probes."""
+
+    def load(self) -> Sequence[CalibrationProbe]: ...

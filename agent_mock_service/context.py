@@ -28,7 +28,7 @@ class ScenarioContextBuilder:
                 round_facts = []
             current_round = position.sample.round_id
             inputs = [*history, ContextMessage("question", position.sample.mocked_query)]
-            raw = self.fusion.fuse(inputs)
+            raw = serialize_context_messages(inputs)
             fused = self.fusion.fuse(inputs)
             positions.append(
                 ScenarioPosition(
@@ -56,16 +56,25 @@ def _round_key(value: str | int) -> tuple[int, int | str]:
         return (1, str(value))
 
 
+def serialize_context_messages(inputs: list[ContextMessage]) -> str:
+    """Deterministically serialize raw messages without invoking business fusion."""
+    return "\n\n".join(
+        f"{'Question' if message.role == 'question' else 'Answer'}:\n{message.content.strip()}"
+        for message in inputs
+        if message.content.strip()
+    )
+
+
 class ScenarioContextCache:
     """Thread-safe lazy cache for derived scenarios and their document embeddings."""
 
     def __init__(self) -> None:
-        self._values: dict[tuple[str, str, str], Scenario[Any, Any]] = {}
+        self._values: dict[tuple[str, str, str], dict[int, ScenarioContext]] = {}
         self._lock = threading.RLock()
 
     def get(
         self, scenario_id: str, encoder_fingerprint: str, data_fingerprint: str
-    ) -> Scenario[Any, Any] | None:
+    ) -> dict[int, ScenarioContext] | None:
         with self._lock:
             return self._values.get((scenario_id, encoder_fingerprint, data_fingerprint))
 
@@ -74,10 +83,14 @@ class ScenarioContextCache:
         scenario_id: str,
         encoder_fingerprint: str,
         data_fingerprint: str,
-        scenario: Scenario[Any, Any],
+        contexts: dict[int, ScenarioContext],
     ) -> None:
         with self._lock:
-            self._values[(scenario_id, encoder_fingerprint, data_fingerprint)] = scenario
+            self._values[(scenario_id, encoder_fingerprint, data_fingerprint)] = contexts
+
+    def clear(self) -> None:
+        with self._lock:
+            self._values.clear()
 
     def invalidate(self, scenario_id: str) -> None:
         with self._lock:

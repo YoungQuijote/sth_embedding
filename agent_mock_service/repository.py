@@ -139,7 +139,10 @@ class SQLiteRepository:
                     json.dumps(affinities),
                 ),
             )
-            self.context_cache.invalidate(str(sample.sample_id))
+            # sample_hash covers all static context inputs. Duplicate registration only
+            # changes registry_times and must not invalidate derived embeddings.
+            if existing_position is None:
+                self.context_cache.invalidate(str(sample.sample_id))
         result = self.get_by_hash(sample_hash)
         assert result is not None
         return result
@@ -209,9 +212,6 @@ class SQLiteRepository:
         encoder_fingerprint = (
             self.context_builder.encoder.fingerprint if self.context_builder else "none"
         )
-        cached = self.context_cache.get(str(scenario_id), encoder_fingerprint, data_fingerprint)
-        if cached is not None:
-            return cached
         positions = []
         affinities: list[RequestAffinityInfo] = []
         for member in members:
@@ -231,9 +231,41 @@ class SQLiteRepository:
                 RequestAffinityInfo(**item) for item in json.loads(member["affinity_json"])
             )
         scenario = Scenario(str(scenario_id), positions, affinities)
-        result = self.context_builder.build(scenario) if self.context_builder else scenario
-        self.context_cache.put(str(scenario_id), encoder_fingerprint, data_fingerprint, result)
-        return result
+        cached = self.context_cache.get(str(scenario_id), encoder_fingerprint, data_fingerprint)
+        if cached is None:
+            result = self.context_builder.build(scenario) if self.context_builder else scenario
+            self.context_cache.put(
+                str(scenario_id),
+                encoder_fingerprint,
+                data_fingerprint,
+                {position.position: position.context for position in result.positions},
+            )
+            return result
+        # Rehydrate dynamic SQLite facts on every read while reusing derived contexts.
+        return Scenario(
+            scenario.scenario_id,
+            [
+                ScenarioPosition(
+                    position.scenario_id,
+                    position.position,
+                    position.sample,
+                    cached[position.position],
+                    position.features,
+                )
+                for position in scenario.positions
+            ],
+            scenario.registry_affinity_infos,
+        )
+
+    def bind_context_builder(self, builder: ScenarioContextBuilder) -> None:
+        """Bind the runtime-owned encoder and invalidate incompatible derived vectors."""
+        current = self.context_builder.encoder.fingerprint if self.context_builder else None
+        fusion_changed = (
+            self.context_builder is not None and self.context_builder.fusion is not builder.fusion
+        )
+        if current != builder.encoder.fingerprint or fusion_changed:
+            self.context_cache.clear()
+        self.context_builder = builder
 
     def get_many(self, scenario_ids: Iterable[str]) -> list[Scenario[Any, Any]]:
         return [

@@ -172,7 +172,9 @@ def test_calibration_quantiles_smoothing_and_missing_data():
     assert distribution.bins != [0.1, 0.2]
     assert all(value > 0 for value in distribution.positive + distribution.negative)
     assert fit_distribution([], [0.1]).llr(0.5) == 0.0
-    profile = CalibrationBootstrapper().build("dataset", "encoder", {"semantic": ([0.9], [0.1])})
+    profile = CalibrationBootstrapper().fit_profile(
+        "dataset-fingerprint", "encoder", {"semantic": ([0.9], [0.1])}
+    )
     assert profile.llr("semantic", 0.9) > profile.llr("semantic", 0.1)
     assert CalibrationProfile("v", "d", "e").llr("semantic", 0.5) == 0.0
 

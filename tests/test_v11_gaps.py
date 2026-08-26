@@ -6,7 +6,11 @@ from dataclasses import replace
 
 import pytest
 
-from agent_mock_service.calibration import CalibrationBootstrapper, CalibrationProfile
+from agent_mock_service.calibration import (
+    CalibrationBootstrapper,
+    CalibrationProfile,
+    StaticCalibrationCorpusProvider,
+)
 from agent_mock_service.config import RuntimeConfig
 from agent_mock_service.context import ScenarioContextBuilder
 from agent_mock_service.defaults import (
@@ -16,6 +20,7 @@ from agent_mock_service.defaults import (
 )
 from agent_mock_service.domain import (
     FeatureSet,
+    CalibrationSample,
     JudgeCandidate,
     JudgeResult,
     MatchDecision,
@@ -285,14 +290,23 @@ def test_calibration_fingerprint_persistence_and_compatibility(repository):
     assert repository.dataset_fingerprint() != initial
     repository.register(make_sample("b", 1, 2, "beta", "B"))
     bootstrapper = CalibrationBootstrapper()
-    profile = bootstrapper.load_or_bootstrap(repository, HashingEncoder())
+    corpus = StaticCalibrationCorpusProvider(
+        [
+            CalibrationSample("/agent", "alpha", "A", "a", 1, 1),
+            CalibrationSample("/agent", "beta", "B", "b", 1, 2),
+        ]
+    )
+    profile = bootstrapper.load_or_bootstrap(repository, HashingEncoder(), corpus)
     assert repository.load_calibration_profile(profile.version).version == profile.version
-    assert bootstrapper.load_or_bootstrap(repository, HashingEncoder()).version == profile.version
+    assert (
+        bootstrapper.load_or_bootstrap(repository, HashingEncoder(), corpus).version
+        == profile.version
+    )
     different = replace(profile, version="different", encoder_fingerprint="other")
     repository.save_calibration_profile(different)
     assert (
         repository.find_compatible_profile(
-            repository.dataset_fingerprint(), "other", profile.algorithm_version
+            profile.dataset_fingerprint, "other", profile.algorithm_version
         ).version
         == "different"
     )

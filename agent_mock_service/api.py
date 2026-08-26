@@ -67,6 +67,7 @@ def create_fastapi_app(runtime: AgentMockRuntime) -> Any:
     try:
         from fastapi import FastAPI, Request
         from fastapi.responses import JSONResponse, StreamingResponse
+        from fastapi.concurrency import run_in_threadpool
 
         try:
             from fastapi.sse import EventSourceResponse
@@ -81,14 +82,16 @@ def create_fastapi_app(runtime: AgentMockRuntime) -> Any:
     async def query(endpoint_path: str, request: Request) -> Any:
         body = await request.json()
         wants_sse = "text/event-stream" in request.headers.get("accept", "")
-        result = runtime.handle(
-            MockRequest(
-                f"/{endpoint_path}",
-                body,
-                dict(request.headers),
-                request.headers.get("x-request-id"),
-                ResponseProtocol.SSE if wants_sse else ResponseProtocol.HTTP_JSON,
-            )
+        mock_request = MockRequest(
+            f"/{endpoint_path}",
+            body,
+            dict(request.headers),
+            request.headers.get("x-request-id"),
+            ResponseProtocol.SSE if wants_sse else ResponseProtocol.HTTP_JSON,
+        )
+        result = await run_in_threadpool(
+            runtime.handle,
+            mock_request,
         )
         if not wants_sse:
             return JSONResponse(result.body, status_code=result.status_code)

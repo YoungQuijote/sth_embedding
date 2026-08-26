@@ -93,11 +93,14 @@ class LaneManager:
                 if item.scenario_id == scenario.scenario_id
                 and _round_number(item.round_id) == previous_min
             }
-            base = (
-                matched_round
-                if matched_round > previous_min or positions_in_previous <= matched_in_previous
-                else previous_min
-            )
+            previous_index = rounds.index(previous_min)
+            matched_index = rounds.index(matched_round)
+            if matched_index > previous_index:
+                base_index = matched_index
+            elif positions_in_previous <= matched_in_previous:
+                base_index = min(previous_index + 1, len(rounds) - 1)
+            else:
+                base_index = previous_index
             terminal_positions = {
                 position.position
                 for position in scenario.positions
@@ -112,9 +115,7 @@ class LaneManager:
             if matched_round == rounds[-1] and terminal_positions <= matched_terminal:
                 self._lanes.pop(lane.lane_id, None)
                 return None
-            lane.active_rounds = {
-                round_value for round_value in rounds if base <= round_value <= base + 1
-            }
+            lane.active_rounds = set(rounds[base_index : base_index + 2])
             lane.last_active_at = current
             lane.state_version += 1
             return lane

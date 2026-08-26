@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import asdict
 from typing import Any
 
-from .calibration import CalibrationBootstrapper, CalibrationProfile
+from .calibration import CalibrationBootstrapper, CalibrationProfile, neutral_profile
 from .config import RuntimeConfig
+from .context import ScenarioContextBuilder
 from .contracts import (
     AffinityExtractor,
     BusinessFeatureExtractor,
+    CalibrationCorpusProvider,
     ContextFusionProvider,
     EmbeddingEncoder,
     FeatureComparator,
@@ -51,6 +54,7 @@ class AgentMockRuntime:
         affinity_extractor: AffinityExtractor | None = None,
         judge: Judge | None = None,
         calibration: CalibrationProfile | None = None,
+        calibration_corpus: CalibrationCorpusProvider | None = None,
         lanes: LaneManager | None = None,
         renderers: ResponseRendererRegistry | None = None,
         trace: TraceWriter | None = None,
@@ -62,11 +66,27 @@ class AgentMockRuntime:
         self.feature_extractor = feature_extractor or EmptyFeatureExtractor()
         self.feature_comparator = feature_comparator or DefaultFeatureComparator()
         self.fusion = fusion or JoiningContextFusionProvider()
+        if calibration is not None and calibration.encoder_fingerprint != self.encoder.fingerprint:
+            raise ValueError("calibration and runtime encoder fingerprints differ")
+        self.repository.bind_context_builder(ScenarioContextBuilder(self.fusion, self.encoder))
         self.affinity_extractor = affinity_extractor or DefaultAffinityExtractor()
         self.judge = judge or FakeJudge()
-        self.calibration = calibration or CalibrationBootstrapper().load_or_bootstrap(
-            repository, self.encoder
-        )
+        if calibration is not None:
+            self.calibration = calibration
+        elif calibration_corpus is not None:
+            bootstrapper = CalibrationBootstrapper(
+                self.config.bootstrap_hard_negative_k,
+                self.config.bootstrap_easy_negative_k,
+                self.config.bootstrap_random_seed,
+            )
+            self.calibration = bootstrapper.load_or_bootstrap(
+                repository, self.encoder, calibration_corpus
+            )
+        else:
+            logging.getLogger(__name__).warning(
+                "No calibration corpus configured; using neutral calibration profile"
+            )
+            self.calibration = neutral_profile(self.encoder.fingerprint)
         self.lanes = lanes or LaneManager(self.config.lane_ttl_seconds)
         self.renderers = renderers or ResponseRendererRegistry()
         self.trace = trace or MemoryTraceWriter()

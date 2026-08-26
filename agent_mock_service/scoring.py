@@ -62,7 +62,7 @@ class BayesPositionScorer:
         self.availability_gamma = availability_gamma
 
     def score(self, evidence: PositionPathEvidence) -> PositionScore:
-        semantic_llr = self.profile.llr("semantic", evidence.semantic_raw)
+        semantic_llr = self.profile.llr("semantic", evidence.scenario_semantic_raw)
         context_llr = self.profile.llr("context", evidence.context_raw)
         feature_llr = self.profile.llr("feature", evidence.feature_raw)
         affinity_llr = self.profile.llr("affinity", evidence.affinity_raw)
@@ -84,7 +84,8 @@ class BayesPositionScorer:
             evidence.scenario_id,
             evidence.position,
             evidence.lane_id,
-            evidence.semantic_raw,
+            evidence.scenario_semantic_raw,
+            evidence.position_semantic_raw,
             evidence.context_raw,
             evidence.feature_raw,
             evidence.affinity_raw,
@@ -125,6 +126,17 @@ class BayesEvidenceBuilder:
         lanes: dict[str, LaneRuntimeState],
     ) -> list[tuple[PositionPathEvidence, Any, str | None]]:
         local_map = {(item.scenario_id, item.position): item.similarity for item in local}
+        scenario_semantic = {
+            scenario.scenario_id: max(
+                (
+                    similarity
+                    for (scenario_id, _), similarity in local_map.items()
+                    if scenario_id == scenario.scenario_id
+                ),
+                default=0.0,
+            )
+            for scenario in scenarios
+        }
         context_paths = {
             (item.scenario_id, item.position, item.lane_id): item.similarity for item in context
         }
@@ -145,6 +157,7 @@ class BayesEvidenceBuilder:
                                 scenario.scenario_id,
                                 position.position,
                                 None,
+                                scenario_semantic[scenario.scenario_id],
                                 semantic,
                                 0.0,
                                 feature_score,
@@ -178,6 +191,7 @@ class BayesEvidenceBuilder:
                                 scenario.scenario_id,
                                 position.position,
                                 lane_id,
+                                scenario_semantic[scenario.scenario_id],
                                 semantic or 0.0,
                                 context_score,
                                 feature_score,

@@ -20,6 +20,9 @@ class RuntimeConfig:
     availability_gamma: float = 2.0
     default_response_protocol: ResponseProtocol = ResponseProtocol.HTTP_JSON
     sentence_transformer_encoder: str | None = SENTENCE_TRANSFORMER_ENCODER
+    bootstrap_hard_negative_k: int = 3
+    bootstrap_easy_negative_k: int = 3
+    bootstrap_random_seed: int = 42
     transition_prior: dict[int, float] = field(
         default_factory=lambda: {-2: 0.0, -1: 0.1, 0: 1.0, 1: 0.9, 2: 0.5, 3: 0.3}
     )

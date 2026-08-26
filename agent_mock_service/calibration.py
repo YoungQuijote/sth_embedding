@@ -4,14 +4,26 @@ import bisect
 import hashlib
 import json
 import math
+import random
 import time
 import logging
+from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .defaults import cosine_similarity
+from .domain import CalibrationSample
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class StaticCalibrationCorpusProvider:
+    samples: Sequence[CalibrationSample]
+
+    def load(self) -> Sequence[CalibrationSample]:
+        return self.samples
 
 
 @dataclass(slots=True)
@@ -84,14 +96,26 @@ def fit_distribution(
 
 
 class CalibrationBootstrapper:
-    def build(
+    algorithm_version = "scenario-max-loo-v1"
+
+    def __init__(
         self,
-        dataset_id: str,
+        hard_negative_k: int = 3,
+        easy_negative_k: int = 3,
+        random_seed: int = 42,
+    ) -> None:
+        self.hard_negative_k = hard_negative_k
+        self.easy_negative_k = easy_negative_k
+        self.random_seed = random_seed
+
+    def fit_profile(
+        self,
+        dataset_fingerprint: str,
         encoder_fingerprint: str,
         evidence: dict[str, tuple[list[float], list[float]]],
         alpha: float = 1.0,
     ) -> CalibrationProfile:
-        dataset_fingerprint = hashlib.sha256(dataset_id.encode()).hexdigest()
+        """Fit pre-labelled evidence; fingerprint must describe the actual corpus."""
         version = hashlib.sha256(
             f"{dataset_fingerprint}:{encoder_fingerprint}:quantile-laplace-v1".encode()
         ).hexdigest()[:16]
@@ -106,71 +130,125 @@ class CalibrationBootstrapper:
             smoothing_alpha=alpha,
         )
 
-    def bootstrap(self, repository: Any, encoder: Any, alpha: float = 1.0) -> CalibrationProfile:
-        samples = repository.list_all()
-        dataset_fingerprint = repository.dataset_fingerprint()
+    @staticmethod
+    def corpus_fingerprint(samples: Sequence[CalibrationSample]) -> str:
+        records = [
+            {
+                "endpoint_id": sample.endpoint_id,
+                "scenario_id": sample.scenario_id,
+                "round_id": str(sample.round_id),
+                "position_id": sample.position_id,
+                "mocked_query": sample.mocked_query,
+                "mocked_answer": sample.mocked_answer,
+                "features": {
+                    "hard": sample.features.hard_features,
+                    "soft": sample.features.soft_features,
+                },
+            }
+            for sample in samples
+        ]
+        records.sort(
+            key=lambda item: (
+                item["endpoint_id"],
+                item["scenario_id"],
+                item["round_id"],
+                item["position_id"],
+            )
+        )
+        raw = json.dumps(
+            records, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        )
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def semantic_scores(
+        self, samples: Sequence[CalibrationSample], encoder: Any
+    ) -> tuple[list[float], list[float]]:
+        """Simulate sample-to-scenario retrieval using leave-one-out scenario maxima."""
+        vectors = encoder.encode_documents([sample.mocked_query for sample in samples])
+        grouped: dict[tuple[str, str], list[int]] = defaultdict(list)
+        for index, sample in enumerate(samples):
+            grouped[(sample.endpoint_id, sample.scenario_id)].append(index)
+        positive: list[float] = []
+        negative: list[float] = []
+        rng = random.Random(self.random_seed)
+        for query_index, query_sample in enumerate(samples):
+            true_key = (query_sample.endpoint_id, query_sample.scenario_id)
+            same_scenario = [index for index in grouped[true_key] if index != query_index]
+            if same_scenario:
+                positive.append(
+                    max(
+                        cosine_similarity(vectors[query_index], vectors[index])
+                        for index in same_scenario
+                    )
+                )
+            incorrect_scores = []
+            for (endpoint_id, scenario_id), indexes in grouped.items():
+                if (
+                    endpoint_id != query_sample.endpoint_id
+                    or scenario_id == query_sample.scenario_id
+                ):
+                    continue
+                incorrect_scores.append(
+                    max(
+                        cosine_similarity(vectors[query_index], vectors[index]) for index in indexes
+                    )
+                )
+            incorrect_scores.sort(reverse=True)
+            negative.extend(incorrect_scores[: self.hard_negative_k])
+            remaining = incorrect_scores[self.hard_negative_k :]
+            if remaining:
+                negative.extend(rng.sample(remaining, min(self.easy_negative_k, len(remaining))))
+        # One global exact-match anchor, not one self-similarity per sample.
+        positive.append(1.0)
+        return positive, negative
+
+    def bootstrap(
+        self, samples: Sequence[CalibrationSample], encoder: Any, alpha: float = 1.0
+    ) -> CalibrationProfile:
+        dataset_fingerprint = self.corpus_fingerprint(samples)
         version = hashlib.sha256(
-            f"{dataset_fingerprint}:{encoder.fingerprint}:quantile-laplace-v1".encode()
+            f"{dataset_fingerprint}:{encoder.fingerprint}:{self.algorithm_version}".encode()
         ).hexdigest()[:16]
-        if len({str(sample.sample_id) for sample in samples}) < 2:
+        semantic_positive, semantic_negative = self.semantic_scores(samples, encoder)
+        if not semantic_negative:
             logger.warning(
-                "Insufficient scenarios for calibration bootstrap; using neutral profile"
+                "Insufficient calibration corpus for semantic negatives; using neutral profile"
             )
             return CalibrationProfile(
-                version, dataset_fingerprint, encoder.fingerprint, smoothing_alpha=alpha
+                version,
+                dataset_fingerprint,
+                encoder.fingerprint,
+                algorithm_version=self.algorithm_version,
+                smoothing_alpha=alpha,
             )
-        vectors = encoder.encode_documents([sample.mocked_query for sample in samples])
-        semantic_positive = [cosine_similarity(vector, vector) for vector in vectors]
-        semantic_negative = []
-        for index, sample in enumerate(samples):
-            different = [
-                (cosine_similarity(vectors[index], vector), other)
-                for vector, other in zip(vectors, samples, strict=True)
-                if str(other.sample_id) != str(sample.sample_id)
-            ]
-            if different:
-                semantic_negative.append(max(different, key=lambda item: item[0])[0])
-        contexts = [repository.get(str(sample.sample_id)) for sample in samples]
-        context_vectors = [
-            next(
-                position.context.embedding
-                for position in scenario.positions
-                if position.position == sample.position_id
-            )
-            for scenario, sample in zip(contexts, samples, strict=True)
-            if scenario is not None
-        ]
-        context_positive = [cosine_similarity(vector, vector) for vector in context_vectors]
-        context_negative = []
-        for index, sample in enumerate(samples[: len(context_vectors)]):
-            different = [
-                cosine_similarity(context_vectors[index], vector)
-                for vector, other in zip(context_vectors, samples, strict=False)
-                if str(other.sample_id) != str(sample.sample_id)
-            ]
-            if different:
-                context_negative.append(max(different))
+        # Context remains uncalibrated until runtime-like probes are explicitly supplied.
         distributions = {
-            "semantic": fit_distribution(semantic_positive, semantic_negative, alpha=alpha),
-            "context": fit_distribution(context_positive, context_negative, alpha=alpha),
+            "semantic": fit_distribution(semantic_positive, semantic_negative, alpha=alpha)
         }
         return CalibrationProfile(
             version,
             dataset_fingerprint,
             encoder.fingerprint,
+            algorithm_version=self.algorithm_version,
             distributions=distributions,
             smoothing_alpha=alpha,
         )
 
     def load_or_bootstrap(
-        self, repository: Any, encoder: Any, alpha: float = 1.0
+        self, repository: Any, encoder: Any, corpus_provider: Any, alpha: float = 1.0
     ) -> CalibrationProfile:
-        fingerprint = repository.dataset_fingerprint()
+        samples = list(corpus_provider.load())
+        fingerprint = self.corpus_fingerprint(samples)
         existing = repository.find_compatible_profile(
-            fingerprint, encoder.fingerprint, "quantile-laplace-v1"
+            fingerprint, encoder.fingerprint, self.algorithm_version
         )
         if existing is not None:
             return existing
-        profile = self.bootstrap(repository, encoder, alpha)
+        profile = self.bootstrap(samples, encoder, alpha)
         repository.save_calibration_profile(profile)
         return profile
+
+
+def neutral_profile(encoder_fingerprint: str) -> CalibrationProfile:
+    version = hashlib.sha256(f"neutral:{encoder_fingerprint}".encode()).hexdigest()[:16]
+    return CalibrationProfile(version, "no-calibration-corpus", encoder_fingerprint)
