@@ -57,11 +57,22 @@ class SQLiteRepository:
         CREATE TABLE IF NOT EXISTS endpoints(endpoint_id TEXT PRIMARY KEY, table_name TEXT UNIQUE NOT NULL);
         CREATE TABLE IF NOT EXISTS scenario_membership(
           scenario_id TEXT NOT NULL, endpoint_id TEXT NOT NULL, sample_hash TEXT PRIMARY KEY,
-          position_id INTEGER NOT NULL, affinity_json TEXT NOT NULL DEFAULT '[]');
+          position_id INTEGER NOT NULL, affinity_json TEXT NOT NULL DEFAULT '[]',
+          UNIQUE(scenario_id, position_id));
         CREATE INDEX IF NOT EXISTS idx_membership_scenario ON scenario_membership(scenario_id);
         CREATE TABLE IF NOT EXISTS calibration_profiles(
           version TEXT PRIMARY KEY, profile_json TEXT NOT NULL, created_at REAL NOT NULL);
         """)
+        try:
+            self._connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_membership_position "
+                "ON scenario_membership(scenario_id, position_id)"
+            )
+        except sqlite3.IntegrityError as error:
+            raise RuntimeError(
+                "existing SQLite database contains duplicate scenario positions; "
+                "rebuild or migrate it before starting AgentMockService"
+            ) from error
         self._connection.commit()
 
     def _table(self, endpoint_id: str, create: bool = False) -> str:
@@ -91,6 +102,14 @@ class SQLiteRepository:
         now = time.time()
         with self._lock, self._connection:
             table = self._table(sample.endpoint_id, create=True)
+            global_position = self._connection.execute(
+                "SELECT sample_hash FROM scenario_membership WHERE scenario_id=? AND position_id=?",
+                (str(sample.sample_id), sample.position_id),
+            ).fetchone()
+            if global_position and global_position[0] != sample_hash:
+                raise ValueError(
+                    "scenario_id + position_id must uniquely identify one ScenarioPosition"
+                )
             existing_position = self._connection.execute(
                 f'SELECT sample_hash FROM "{table}" WHERE sample_id=? AND position_id=?',
                 (str(sample.sample_id), sample.position_id),
@@ -129,16 +148,22 @@ class SQLiteRepository:
                     else {name: getattr(affinity, name) for name in affinity.__slots__}
                 ]
             )
-            self._connection.execute(
-                "INSERT INTO scenario_membership VALUES(?,?,?,?,?) ON CONFLICT(sample_hash) DO NOTHING",
-                (
-                    str(sample.sample_id),
-                    sample.endpoint_id,
-                    sample_hash,
-                    sample.position_id,
-                    json.dumps(affinities),
-                ),
-            )
+            try:
+                self._connection.execute(
+                    "INSERT INTO scenario_membership VALUES(?,?,?,?,?) "
+                    "ON CONFLICT(sample_hash) DO NOTHING",
+                    (
+                        str(sample.sample_id),
+                        sample.endpoint_id,
+                        sample_hash,
+                        sample.position_id,
+                        json.dumps(affinities),
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValueError(
+                    "scenario_id + position_id must uniquely identify one ScenarioPosition"
+                ) from error
             # sample_hash covers all static context inputs. Duplicate registration only
             # changes registry_times and must not invalidate derived embeddings.
             if existing_position is None:
@@ -209,9 +234,7 @@ class SQLiteRepository:
         data_fingerprint = hashlib.sha256(
             "|".join(member["sample_hash"] for member in members).encode()
         ).hexdigest()
-        encoder_fingerprint = (
-            self.context_builder.encoder.fingerprint if self.context_builder else "none"
-        )
+        encoder_fingerprint = self.context_builder.fingerprint if self.context_builder else "none"
         positions = []
         affinities: list[RequestAffinityInfo] = []
         for member in members:
@@ -259,11 +282,8 @@ class SQLiteRepository:
 
     def bind_context_builder(self, builder: ScenarioContextBuilder) -> None:
         """Bind the runtime-owned encoder and invalidate incompatible derived vectors."""
-        current = self.context_builder.encoder.fingerprint if self.context_builder else None
-        fusion_changed = (
-            self.context_builder is not None and self.context_builder.fusion is not builder.fusion
-        )
-        if current != builder.encoder.fingerprint or fusion_changed:
+        current = self.context_builder.fingerprint if self.context_builder else None
+        if current != builder.fingerprint:
             self.context_cache.clear()
         self.context_builder = builder
 

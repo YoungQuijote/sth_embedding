@@ -114,7 +114,9 @@ class KeywordEncoder:
 
 def test_semantic_match_and_endpoint_hard_scope(repository):
     repository.register(sample("Rome seven-day weather", "weather answer", endpoint="/weather"))
-    repository.register(sample("Rome seven-day weather", "traffic answer", endpoint="/traffic"))
+    repository.register(
+        sample("Rome seven-day weather", "traffic answer", scenario="2", endpoint="/traffic")
+    )
     runtime = AgentMockRuntime(repository, encoder=KeywordEncoder())
     response = runtime.handle(MockRequest("/weather", "罗马天气适合出行吗"))
     assert response.body == {"answer": "weather answer"}

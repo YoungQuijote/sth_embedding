@@ -23,6 +23,7 @@ class RuntimeConfig:
     bootstrap_hard_negative_k: int = 3
     bootstrap_easy_negative_k: int = 3
     bootstrap_random_seed: int = 42
+    allow_default_plugin: bool = True
     transition_prior: dict[int, float] = field(
         default_factory=lambda: {-2: 0.0, -1: 0.1, 0: 1.0, 1: 0.9, 2: 0.5, 3: 0.3}
     )

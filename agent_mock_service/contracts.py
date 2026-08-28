@@ -47,6 +47,12 @@ class ContextFusionProvider(Protocol):
     def fuse(self, inputs: Sequence[ContextMessage]) -> str: ...
 
 
+class FusionProviderResolver(Protocol):
+    fingerprint: str
+
+    def resolve(self, endpoint_id: str) -> ContextFusionProvider: ...
+
+
 class AffinityExtractor(Protocol):
     def extract(self, headers: Mapping[str, str]) -> RequestAffinityInfo: ...
 

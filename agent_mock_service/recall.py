@@ -18,13 +18,17 @@ from .domain import (
 
 
 class SemanticRecaller:
-    def __init__(self, encoder: EmbeddingEncoder, comparator: FeatureComparator) -> None:
+    def __init__(self, encoder: EmbeddingEncoder) -> None:
         self.encoder = encoder
-        self.comparator = comparator
         self.indexes: dict[str, EndpointEmbeddingIndex] = {}
 
     def recall(
-        self, query: str, features: FeatureSet[Any, Any], samples: Iterable[MockSample], k: int
+        self,
+        query: str,
+        features: FeatureSet[Any, Any],
+        samples: Iterable[MockSample],
+        k: int,
+        comparator: FeatureComparator,
     ) -> list[LocalRecallCandidate]:
         query_embedding = self.encoder.encode_query(query)
         sample_list = list(samples)
@@ -33,7 +37,7 @@ class SemanticRecaller:
         index.refresh_if_changed(sample_list)
         candidates = []
         for sample, similarity in index.recall(query_embedding, len(sample_list)):
-            relation, _ = self.comparator.compare(features, sample.features)
+            relation, _ = comparator.compare(features, sample.features)
             if relation is FeatureRelation.CONFLICT:
                 continue
             candidates.append(
@@ -49,9 +53,8 @@ class SemanticRecaller:
 
 
 class LaneContextRecaller:
-    def __init__(self, encoder: EmbeddingEncoder, fusion: ContextFusionProvider) -> None:
+    def __init__(self, encoder: EmbeddingEncoder) -> None:
         self.encoder = encoder
-        self.fusion = fusion
 
     def recall(
         self,
@@ -60,6 +63,7 @@ class LaneContextRecaller:
         scenarios: dict[str, Scenario[Any, Any]],
         endpoint_id: str,
         k: int,
+        fusion: ContextFusionProvider,
     ) -> list[ContextRecallCandidate]:
         candidates: list[ContextRecallCandidate] = []
         for lane in lanes:
@@ -74,7 +78,7 @@ class LaneContextRecaller:
                     )
                 )
             messages.append(ContextMessage("question", query))
-            runtime_context = self.fusion.fuse(messages)
+            runtime_context = fusion.fuse(messages)
             runtime_embedding = self.encoder.encode_query(runtime_context)
             for scenario_id in lane.scenario_hypotheses:
                 scenario = scenarios.get(scenario_id)

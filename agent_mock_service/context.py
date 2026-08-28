@@ -3,16 +3,34 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from .contracts import ContextFusionProvider, EmbeddingEncoder
+import hashlib
+
+from .contracts import ContextFusionProvider, EmbeddingEncoder, FusionProviderResolver
 from .domain import ContextMessage, Scenario, ScenarioContext, ScenarioPosition
 
 
 class ScenarioContextBuilder:
     """Build leak-free contexts: a position sees prior answers, never its own answer."""
 
-    def __init__(self, fusion: ContextFusionProvider, encoder: EmbeddingEncoder) -> None:
+    def __init__(
+        self,
+        fusion: ContextFusionProvider | FusionProviderResolver,
+        encoder: EmbeddingEncoder,
+    ) -> None:
         self.fusion = fusion
         self.encoder = encoder
+
+    def _resolve_fusion(self, endpoint_id: str) -> ContextFusionProvider:
+        resolver = getattr(self.fusion, "resolve", None)
+        return resolver(endpoint_id) if resolver is not None else self.fusion  # type: ignore[return-value]
+
+    @property
+    def fingerprint(self) -> str:
+        fusion_fingerprint = getattr(self.fusion, "fingerprint", None)
+        if fusion_fingerprint is None:
+            identity = f"{type(self.fusion).__module__}.{type(self.fusion).__qualname__}"
+            fusion_fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+        return f"{self.encoder.fingerprint}:{fusion_fingerprint}"
 
     def build(self, scenario: Scenario[Any, Any]) -> Scenario[Any, Any]:
         ordered = sorted(
@@ -29,7 +47,7 @@ class ScenarioContextBuilder:
             current_round = position.sample.round_id
             inputs = [*history, ContextMessage("question", position.sample.mocked_query)]
             raw = serialize_context_messages(inputs)
-            fused = self.fusion.fuse(inputs)
+            fused = self._resolve_fusion(position.sample.endpoint_id).fuse(inputs)
             positions.append(
                 ScenarioPosition(
                     position.scenario_id,

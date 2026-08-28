@@ -213,8 +213,15 @@ def test_runtime_semantic_llr_uses_shared_scenario_max(repository):
         LocalRecallCandidate(value.sample_hash, "s", value.position_id, similarity, value)
         for value, similarity in zip(stored, (0.8, 0.4, 0.2), strict=True)
     ]
-    evidence = BayesEvidenceBuilder(DefaultFeatureComparator()).build(
-        [scenario], "/agent", FeatureSet({}, {}), RequestAffinityInfo(), local, [], {}
+    evidence = BayesEvidenceBuilder().build(
+        [scenario],
+        "/agent",
+        FeatureSet({}, {}),
+        RequestAffinityInfo(),
+        local,
+        [],
+        {},
+        DefaultFeatureComparator(),
     )
     profile = CalibrationProfile(
         "v",

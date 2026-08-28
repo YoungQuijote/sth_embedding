@@ -38,6 +38,27 @@ Runtime 是 embedding space 的唯一 owner，并会使用同一个 Encoder 构�
 `StaticCalibrationCorpusProvider`；未配置 Corpus 时服务使用 neutral profile，Runtime Registry
 的增删不会触发 Calibration 重训。
 
+多个业务 Endpoint 应注册到一个共享 Runtime：
+
+```python
+from agent_mock_service import BusinessPlugin, BusinessPluginRegistry
+
+plugins = BusinessPluginRegistry(allow_default_plugin=False)
+plugins.register(BusinessPlugin(
+    endpoint_id="/weather",
+    parser=weather_parser,
+    feature_extractor=weather_features,
+    feature_comparator=weather_comparator,
+    fusion=weather_fusion,
+    judge=weather_judge,
+))
+runtime = AgentMockRuntime(repository, business_plugins=plugins)
+```
+
+Repository、Encoder、Lane、Calibration 和 Trace 保持 Service 级共享；Parser、Feature、Fusion、
+Affinity 与 Judge 按请求 Endpoint 路由。SQLite 的 `(scenario_id, position_id)` 现在是跨
+Endpoint 唯一键；含有重复位置的旧数据库会在启动时被拒绝，需要先迁移或重建。
+
 ## v1 能力
 
 * SQLite endpoint 物理分表与 scenario membership 跨 endpoint 聚合；
@@ -47,6 +68,7 @@ Runtime 是 embedding space 的唯一 owner，并会使用同一个 Encoder 构�
 * quantile binning、Laplace smoothing、LLR calibration 与 Bayes-style scoring；
 * 内存 Lane、当前轮加下一轮滑动窗口和 TTL；
 * 同一 Scenario 的多 Lane runtime path、候选级 Lane context 隔离；
+* 多 Endpoint BusinessPlugin 路由与跨 Endpoint Scenario/Lane；
 * Endpoint 文档 embedding index 与 lazy Scenario context cache；
 * 从独立 Calibration Corpus bootstrap 并由 SQLite 持久化的 Calibration Profile；
 * deterministic FakeJudge 及可替换 LLM Judge contract；

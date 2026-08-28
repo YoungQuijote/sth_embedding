@@ -31,6 +31,7 @@ from .defaults import (
 from .domain import JudgeCandidate, MatchDecision, MockRequest, MockResponse, RuntimeInteraction
 from .judge import FakeJudge
 from .lane import LaneManager
+from .plugin import BusinessPlugin, BusinessPluginRegistry
 from .recall import LaneContextRecaller, SemanticRecaller, fuse_recall
 from .repository import SQLiteRepository
 from .response import ResponseRendererRegistry
@@ -58,19 +59,52 @@ class AgentMockRuntime:
         lanes: LaneManager | None = None,
         renderers: ResponseRendererRegistry | None = None,
         trace: TraceWriter | None = None,
+        business_plugins: BusinessPluginRegistry | None = None,
     ) -> None:
         self.repository = repository
         self.config = config or RuntimeConfig()
-        self.parser = parser or DefaultQueryParser()
         self.encoder = encoder or create_default_encoder(self.config.sentence_transformer_encoder)
-        self.feature_extractor = feature_extractor or EmptyFeatureExtractor()
-        self.feature_comparator = feature_comparator or DefaultFeatureComparator()
-        self.fusion = fusion or JoiningContextFusionProvider()
+        self.default_affinity_extractor = affinity_extractor or DefaultAffinityExtractor()
+        if business_plugins is None:
+            default_plugin = BusinessPlugin(
+                "*",
+                parser or DefaultQueryParser(),
+                feature_extractor or EmptyFeatureExtractor(),
+                feature_comparator or DefaultFeatureComparator(),
+                fusion or JoiningContextFusionProvider(),
+                judge or FakeJudge(),
+                affinity_extractor,
+            )
+            business_plugins = BusinessPluginRegistry(
+                default_plugin, allow_default_plugin=self.config.allow_default_plugin
+            )
+            if any(
+                value is not None
+                for value in (
+                    parser,
+                    feature_extractor,
+                    feature_comparator,
+                    fusion,
+                    affinity_extractor,
+                    judge,
+                )
+            ):
+                logging.getLogger(__name__).warning(
+                    "legacy per-runtime business components are deprecated; "
+                    "use BusinessPluginRegistry"
+                )
+        self.business_plugins = business_plugins
+        default = self.business_plugins.default_plugin
+        self.parser = default.parser if default else None
+        self.feature_extractor = default.feature_extractor if default else None
+        self.feature_comparator = default.feature_comparator if default else None
+        self.fusion = default.fusion if default else None
+        self.judge = default.judge if default else None
         if calibration is not None and calibration.encoder_fingerprint != self.encoder.fingerprint:
             raise ValueError("calibration and runtime encoder fingerprints differ")
-        self.repository.bind_context_builder(ScenarioContextBuilder(self.fusion, self.encoder))
-        self.affinity_extractor = affinity_extractor or DefaultAffinityExtractor()
-        self.judge = judge or FakeJudge()
+        self.repository.bind_context_builder(
+            ScenarioContextBuilder(self.business_plugins, self.encoder)
+        )
         if calibration is not None:
             self.calibration = calibration
         elif calibration_corpus is not None:
@@ -90,9 +124,9 @@ class AgentMockRuntime:
         self.lanes = lanes or LaneManager(self.config.lane_ttl_seconds)
         self.renderers = renderers or ResponseRendererRegistry()
         self.trace = trace or MemoryTraceWriter()
-        self.semantic_recaller = SemanticRecaller(self.encoder, self.feature_comparator)
-        self.context_recaller = LaneContextRecaller(self.encoder, self.fusion)
-        self.evidence_builder = BayesEvidenceBuilder(self.feature_comparator)
+        self.semantic_recaller = SemanticRecaller(self.encoder)
+        self.context_recaller = LaneContextRecaller(self.encoder)
+        self.evidence_builder = BayesEvidenceBuilder()
         self.scorer = BayesPositionScorer(
             self.calibration,
             self.config.transition_prior,
@@ -114,10 +148,17 @@ class AgentMockRuntime:
             "timing": {},
         }
         try:
+            try:
+                plugin = self.business_plugins.get(request.endpoint_id)
+            except KeyError as error:
+                return self._failure(
+                    request_id, MatchDecision.MISS, trace_event, started, str(error)
+                )
             stage = time.perf_counter()
-            query = self.parser.parse(request.body).strip()
-            affinity = self.affinity_extractor.extract(request.headers)
-            features = self.feature_extractor.extract(query)
+            query = plugin.parser.parse(request.body).strip()
+            affinity_extractor = plugin.affinity_extractor or self.default_affinity_extractor
+            affinity = affinity_extractor.extract(request.headers)
+            features = plugin.feature_extractor.extract(query)
             trace_event["query_content"] = query
             trace_event["request_affinity"] = asdict(affinity)
             trace_event["timing"]["parse_feature_ms"] = (time.perf_counter() - stage) * 1000
@@ -139,7 +180,11 @@ class AgentMockRuntime:
                 )
             stage = time.perf_counter()
             local = self.semantic_recaller.recall(
-                query, features, samples, self.config.semantic_recall_k
+                query,
+                features,
+                samples,
+                self.config.semantic_recall_k,
+                plugin.feature_comparator,
             )
             scenario_ids = {candidate.scenario_id for candidate in local}
             active_lanes = self.lanes.active()
@@ -151,7 +196,12 @@ class AgentMockRuntime:
                 for scenario in self.repository.get_many(scenario_ids)
             }
             context = self.context_recaller.recall(
-                query, active_lanes, scenarios, request.endpoint_id, self.config.context_recall_k
+                query,
+                active_lanes,
+                scenarios,
+                request.endpoint_id,
+                self.config.context_recall_k,
+                plugin.fusion,
             )
             local, context = fuse_recall(
                 local,
@@ -177,6 +227,7 @@ class AgentMockRuntime:
                 local,
                 context,
                 lanes_by_id,
+                plugin.feature_comparator,
             ):
                 candidates.append(
                     JudgeCandidate(
@@ -199,10 +250,10 @@ class AgentMockRuntime:
                 "candidate_scenario_ids": sorted(scenario_ids),
             }
             trace_event["bayes_scores"] = [asdict(item.score) for item in candidates]
-            result = self.judge.judge(query, scenario_candidates)
+            result = plugin.judge.judge(query, scenario_candidates)
             trace_event["judge"] = {
-                "model": self.judge.model_name,
-                "prompt_version": self.judge.prompt_version,
+                "model": plugin.judge.model_name,
+                "prompt_version": plugin.judge.prompt_version,
                 "decision": result.decision.value,
                 "confidence": result.confidence,
                 "short_reason": result.short_reason,

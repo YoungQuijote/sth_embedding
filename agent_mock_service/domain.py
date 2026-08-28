@@ -207,11 +207,11 @@ class PositionScore:
     scenario_id: str
     position: int
     lane_id: str | None = None
-    scenario_semantic_raw: float = 0.0
-    position_semantic_raw: float = 0.0
-    context_raw: float = 0.0
-    feature_raw: float = 0.0
-    affinity_raw: float = 0.0
+    scenario_semantic_raw: float | None = None
+    position_semantic_raw: float | None = None
+    context_raw: float | None = None
+    feature_raw: float | None = None
+    affinity_raw: float | None = None
     semantic_llr: float = 0.0
     context_llr: float = 0.0
     feature_llr: float = 0.0
@@ -227,14 +227,14 @@ class PositionPathEvidence:
     scenario_id: str
     position: int
     lane_id: str | None
-    scenario_semantic_raw: float
-    position_semantic_raw: float
-    context_raw: float
-    feature_raw: float
-    affinity_raw: float
+    scenario_semantic_raw: float | None
+    position_semantic_raw: float | None
+    context_raw: float | None
+    feature_raw: float | None
+    affinity_raw: float | None
     round_id: str | int
     availability: InvokeAvailability
-    active_rounds: set[str | int]
+    transition_distance: int | None
 
 
 @dataclass(slots=True)

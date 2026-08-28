@@ -31,17 +31,17 @@ def availability_prior(
     return (max(capacity - availability.invoked_times, 0.0) / capacity) ** gamma
 
 
-def transition_prior(
-    candidate_round: str | int, active_rounds: set[str | int], table: dict[int, float], floor: float
-) -> float:
-    if not active_rounds:
+def transition_prior(ordinal_distance: int | None, table: dict[int, float], floor: float) -> float:
+    if ordinal_distance is None:
         return 0.0
-    try:
-        active = min(int(value) for value in active_rounds)
-        delta = int(candidate_round) - active
-    except (TypeError, ValueError):
-        return floor
-    return table.get(delta, floor)
+    return table.get(ordinal_distance, floor)
+
+
+def calibrated_llr(
+    profile: CalibrationProfile, evidence_name: str, raw_value: float | None
+) -> float:
+    """Missing evidence is neutral; an observed zero remains calibratable evidence."""
+    return 0.0 if raw_value is None else profile.llr(evidence_name, raw_value)
 
 
 class BayesPositionScorer:
@@ -62,12 +62,12 @@ class BayesPositionScorer:
         self.availability_gamma = availability_gamma
 
     def score(self, evidence: PositionPathEvidence) -> PositionScore:
-        semantic_llr = self.profile.llr("semantic", evidence.scenario_semantic_raw)
-        context_llr = self.profile.llr("context", evidence.context_raw)
-        feature_llr = self.profile.llr("feature", evidence.feature_raw)
-        affinity_llr = self.profile.llr("affinity", evidence.affinity_raw)
+        semantic_llr = calibrated_llr(self.profile, "semantic", evidence.scenario_semantic_raw)
+        context_llr = calibrated_llr(self.profile, "context", evidence.context_raw)
+        feature_llr = calibrated_llr(self.profile, "feature", evidence.feature_raw)
+        affinity_llr = calibrated_llr(self.profile, "affinity", evidence.affinity_raw)
         transition = transition_prior(
-            evidence.round_id, evidence.active_rounds, self.transition_table, self.transition_floor
+            evidence.transition_distance, self.transition_table, self.transition_floor
         )
         availability_value = availability_prior(
             evidence.availability, self.availability_alpha, self.availability_gamma
@@ -112,9 +112,6 @@ def normalize_scores(scores: list[PositionScore]) -> None:
 class BayesEvidenceBuilder:
     """Build independent local and lane-backed position-path evidence without re-encoding."""
 
-    def __init__(self, comparator: FeatureComparator) -> None:
-        self.comparator = comparator
-
     def build(
         self,
         scenarios: list[Scenario[Any, Any]],
@@ -124,6 +121,7 @@ class BayesEvidenceBuilder:
         local: list[LocalRecallCandidate],
         context: list[ContextRecallCandidate],
         lanes: dict[str, LaneRuntimeState],
+        feature_comparator: FeatureComparator,
     ) -> list[tuple[PositionPathEvidence, Any, str | None]]:
         local_map = {(item.scenario_id, item.position): item.similarity for item in local}
         scenario_semantic = {
@@ -133,7 +131,7 @@ class BayesEvidenceBuilder:
                     for (scenario_id, _), similarity in local_map.items()
                     if scenario_id == scenario.scenario_id
                 ),
-                default=0.0,
+                default=None,
             )
             for scenario in scenarios
         }
@@ -142,13 +140,22 @@ class BayesEvidenceBuilder:
         }
         results = []
         for scenario in scenarios:
-            affinity_score = ipv4_affinity(affinity, scenario.registry_affinity_infos)
+            affinity_score = (
+                ipv4_affinity(affinity, scenario.registry_affinity_infos)
+                if affinity.request_ip
+                and any(info.request_ip for info in scenario.registry_affinity_infos)
+                else None
+            )
+            ordered_rounds = _ordered_rounds(scenario)
             for position in scenario.positions:
                 if position.sample.endpoint_id != endpoint_id:
                     continue
-                relation, feature_score = self.comparator.compare(query_features, position.features)
+                relation, feature_score = feature_comparator.compare(
+                    query_features, position.features
+                )
                 if relation is FeatureRelation.CONFLICT:
                     continue
+                feature_raw = None if relation is FeatureRelation.UNKNOWN else feature_score
                 semantic = local_map.get((scenario.scenario_id, position.position))
                 if semantic is not None:
                     results.append(
@@ -159,12 +166,12 @@ class BayesEvidenceBuilder:
                                 None,
                                 scenario_semantic[scenario.scenario_id],
                                 semantic,
-                                0.0,
-                                feature_score,
+                                None,
+                                feature_raw,
                                 affinity_score,
                                 position.sample.round_id,
                                 position.sample.availability,
-                                set(),
+                                None,
                             ),
                             position,
                             None,
@@ -181,6 +188,9 @@ class BayesEvidenceBuilder:
                     ):
                         continue
                     lane = lanes[lane_id]
+                    transition_distance = _transition_distance(
+                        ordered_rounds, lane.active_rounds, position.sample.round_id
+                    )
                     runtime_context = "\n\n".join(
                         f"Question:\n{item.actual_query}\n\nAnswer:\n{item.returned_answer}"
                         for item in lane.interactions
@@ -192,19 +202,40 @@ class BayesEvidenceBuilder:
                                 position.position,
                                 lane_id,
                                 scenario_semantic[scenario.scenario_id],
-                                semantic or 0.0,
+                                semantic,
                                 context_score,
-                                feature_score,
+                                feature_raw,
                                 affinity_score,
                                 position.sample.round_id,
                                 position.sample.availability,
-                                lane.active_rounds,
+                                transition_distance,
                             ),
                             position,
                             runtime_context,
                         )
                     )
         return results
+
+
+def _ordered_rounds(scenario: Scenario[Any, Any]) -> list[str | int]:
+    values = {position.sample.round_id for position in scenario.positions}
+    try:
+        return sorted(values, key=int)
+    except (TypeError, ValueError):
+        return sorted(values, key=str)
+
+
+def _transition_distance(
+    ordered_rounds: list[str | int], active_rounds: set[str | int], candidate_round: str | int
+) -> int | None:
+    index_by_round = {str(value): index for index, value in enumerate(ordered_rounds)}
+    active_indexes = [
+        index_by_round[str(value)] for value in active_rounds if str(value) in index_by_round
+    ]
+    candidate_index = index_by_round.get(str(candidate_round))
+    if not active_indexes or candidate_index is None:
+        return None
+    return candidate_index - min(active_indexes)
 
 
 class ScenarioScoreAggregator:
