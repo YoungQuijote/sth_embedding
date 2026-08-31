@@ -20,7 +20,7 @@ from .domain import (
     ScenarioPosition,
 )
 
-SAMPLE_HASH_VERSION = "2"
+SAMPLE_HASH_VERSION = "3"
 INCOMPATIBLE_DATABASE_MESSAGE = (
     "Existing AgentMockService SQLite database uses an incompatible sample hash/schema "
     "version. Rebuild or migrate the database."
@@ -52,12 +52,8 @@ def compute_sample_hash(sample: MockSample) -> str:
         "sample_id": str(sample.sample_id).strip(),
         "round_id": str(sample.round_id).strip(),
         "position_id": sample.position_id,
-        "features": _features_payload(sample),
     }
-    try:
-        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    except (TypeError, ValueError) as error:
-        raise TypeError("MockSample features must be stably JSON-serializable") from error
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -384,17 +380,14 @@ class SQLiteRepository:
             if cursor.rowcount != 1:
                 raise KeyError(sample_hash)
 
-    def get(self, scenario_id: str) -> Scenario[Any, Any] | None:
+    def get_facts(self, scenario_id: str) -> Scenario[Any, Any] | None:
+        """Load fresh scenario facts without context fusion or document encoding."""
         members = self._connection.execute(
             "SELECT * FROM scenario_membership WHERE scenario_id=? ORDER BY position_id",
             (str(scenario_id),),
         ).fetchall()
         if not members:
             return None
-        data_fingerprint = hashlib.sha256(
-            "|".join(member["sample_hash"] for member in members).encode()
-        ).hexdigest()
-        encoder_fingerprint = self.context_builder.fingerprint if self.context_builder else "none"
         positions = []
         affinities: list[RequestAffinityInfo] = []
         for member in members:
@@ -413,7 +406,16 @@ class SQLiteRepository:
             affinities.extend(
                 RequestAffinityInfo(**item) for item in json.loads(member["affinity_json"])
             )
-        scenario = Scenario(str(scenario_id), positions, affinities)
+        return Scenario(str(scenario_id), positions, affinities)
+
+    def get(self, scenario_id: str) -> Scenario[Any, Any] | None:
+        scenario = self.get_facts(scenario_id)
+        if scenario is None:
+            return None
+        data_fingerprint = hashlib.sha256(
+            "|".join(position.sample.sample_hash for position in scenario.positions).encode()
+        ).hexdigest()
+        encoder_fingerprint = self.context_builder.fingerprint if self.context_builder else "none"
         cached = self.context_cache.get(str(scenario_id), encoder_fingerprint, data_fingerprint)
         if cached is None:
             result = self.context_builder.build(scenario) if self.context_builder else scenario

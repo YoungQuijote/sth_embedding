@@ -61,7 +61,9 @@ Endpoint 唯一键；含有重复位置的旧数据库会在启动时被拒绝�
 
 ## Repository 生命周期
 
-`sample_hash` v2 覆盖 Endpoint、Scenario、Round、Position、Query、Answer 和静态 Feature。
+`sample_hash` v3 覆盖 Endpoint、Scenario、Round、Position、Query 和 Answer。Feature 是由业务
+Extractor 生成的派生匹配元数据，不参与稳定 Sample Identity；重复注册会保留首次持久化的
+Feature，只增加 `registry_times` 并合并 Affinity。
 Repository 会在 SQLite `repository_metadata` 中校验 hash version；已有事实数据但缺少兼容
 版本标记的旧 Debug 数据库会 fail fast，需要迁移或重建。
 
@@ -76,6 +78,10 @@ repository.delete_scenario(scenario_id, force=False, affinity=current_affinity)
 `repository.delete(sample_hash)` 或 `repository.delete_scenario(scenario_id, force=True)`。
 跨 Endpoint Scenario 的删除在单一 SQLite transaction 中完成；物理删除会使 Scenario Context
 Cache 失效，而 Endpoint Embedding Index 会在下一次 Recall 时根据 sample hash signature 自动收敛。
+
+唯一字符串 Exact Match 是最短路径：完成 Query Parse 和 Endpoint Sample 查询后直接返回，
+不会执行 Affinity/Feature Extraction、Semantic Encoding、Context Fusion 或 Judge。多个相同
+`mocked_query` 仍会进入完整 Recall/Judge 链路。
 
 ## v1 能力
 

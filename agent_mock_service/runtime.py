@@ -156,15 +156,11 @@ class AgentMockRuntime:
                 )
             stage = time.perf_counter()
             query = plugin.parser.parse(request.body).strip()
-            affinity_extractor = plugin.affinity_extractor or self.default_affinity_extractor
-            affinity = affinity_extractor.extract(request.headers)
-            features = plugin.feature_extractor.extract(query)
             trace_event["query_content"] = query
-            trace_event["request_affinity"] = asdict(affinity)
-            trace_event["timing"]["parse_feature_ms"] = (time.perf_counter() - stage) * 1000
             samples = self.repository.list_endpoint(request.endpoint_id)
             direct = [sample for sample in samples if sample.mocked_query.strip() == query]
             if len(direct) == 1:
+                trace_event["timing"]["parse_ms"] = (time.perf_counter() - stage) * 1000
                 lane_id = self.lanes.select_direct_lane(
                     str(direct[0].sample_id), direct[0].round_id
                 )
@@ -178,6 +174,11 @@ class AgentMockRuntime:
                     "DIRECT_MATCH",
                     lane_id,
                 )
+            affinity_extractor = plugin.affinity_extractor or self.default_affinity_extractor
+            affinity = affinity_extractor.extract(request.headers)
+            features = plugin.feature_extractor.extract(query)
+            trace_event["request_affinity"] = asdict(affinity)
+            trace_event["timing"]["parse_feature_ms"] = (time.perf_counter() - stage) * 1000
             stage = time.perf_counter()
             local = self.semantic_recaller.recall(
                 query,
@@ -342,7 +343,7 @@ class AgentMockRuntime:
         if stored is None:
             raise KeyError(sample.sample_hash)
         self.repository.increment_invoked(stored.sample_hash)
-        scenario = self.repository.get(str(stored.sample_id))
+        scenario = self.repository.get_facts(str(stored.sample_id))
         lane_before = self.lanes.get(lane_id) if lane_id else None
         before_version = lane_before.state_version if lane_before else None
         lane = (

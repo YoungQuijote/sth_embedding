@@ -64,22 +64,28 @@ def repository(tmp_path):
     value.close()
 
 
-def test_sample_hash_includes_position_id_and_features():
+def test_sample_hash_includes_position_id_and_ignores_features():
     original = sample()
     assert compute_sample_hash(original) != compute_sample_hash(sample(position=2))
-    assert compute_sample_hash(original) != compute_sample_hash(sample(hard={"device": "E2"}))
+    assert compute_sample_hash(original) == compute_sample_hash(sample(hard={"device": "E2"}))
 
 
-def test_sample_hash_requires_stable_json_features():
-    with pytest.raises(TypeError, match="stably JSON-serializable"):
-        compute_sample_hash(sample(hard={"devices": {"E1", "E2"}}))
-
-
-def test_changed_features_for_existing_position_is_not_duplicate(repository):
+def test_nondeterministic_features_are_duplicate_and_first_value_is_preserved(repository):
     repo, _ = repository
     stored = repo.register(sample(hard={"device": "E1"}))
+    duplicate = repo.register(sample(hard={"device": "E2"}))
+    assert duplicate.sample_hash == stored.sample_hash
+    assert duplicate.availability.registry_times == 2
+    assert duplicate.features.hard_features == {"device": "E1"}
+
+
+def test_changed_identity_for_existing_position_remains_a_conflict(repository):
+    repo, _ = repository
+    stored = repo.register(sample())
     with pytest.raises(ValueError, match="uniquely identify"):
-        repo.register(sample(hard={"device": "E2"}))
+        repo.register(sample(query="different query"))
+    with pytest.raises(ValueError, match="uniquely identify"):
+        repo.register(sample(answer="different answer"))
     assert repo.get_by_hash(stored.sample_hash).availability.registry_times == 1
 
 
@@ -243,7 +249,7 @@ def test_incompatible_sample_hash_schema_fails_fast(tmp_path):
     connection = sqlite3.connect(path)
     connection.executescript("""
     CREATE TABLE repository_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    INSERT INTO repository_metadata VALUES('sample_hash_version', '1');
+    INSERT INTO repository_metadata VALUES('sample_hash_version', '2');
     """)
     connection.close()
     with pytest.raises(RuntimeError, match="incompatible sample hash/schema version"):
