@@ -113,7 +113,7 @@ def test_old_database_without_global_position_uniqueness_is_rejected(tmp_path):
     INSERT INTO scenario_membership VALUES('s','/b','two',1,'[]');
     """)
     connection.close()
-    with pytest.raises(RuntimeError, match="rebuild or migrate"):
+    with pytest.raises(RuntimeError, match="[Rr]ebuild or migrate"):
         SQLiteRepository(path)
 
 

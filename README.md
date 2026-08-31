@@ -59,10 +59,29 @@ Repository、Encoder、Lane、Calibration 和 Trace 保持 Service 级共享；P
 Affinity 与 Judge 按请求 Endpoint 路由。SQLite 的 `(scenario_id, position_id)` 现在是跨
 Endpoint 唯一键；含有重复位置的旧数据库会在启动时被拒绝，需要先迁移或重建。
 
+## Repository 生命周期
+
+`sample_hash` v2 覆盖 Endpoint、Scenario、Round、Position、Query、Answer 和静态 Feature。
+Repository 会在 SQLite `repository_metadata` 中校验 hash version；已有事实数据但缺少兼容
+版本标记的旧 Debug 数据库会 fail fast，需要迁移或重建。
+
+普通业务撤销注册使用引用计数语义：
+
+```python
+repository.unregister(sample_hash, affinity=current_affinity)
+repository.delete_scenario(scenario_id, force=False, affinity=current_affinity)
+```
+
+只有最后一次 `unregister` 才物理删除事实。Admin/Debug 清理可以显式调用
+`repository.delete(sample_hash)` 或 `repository.delete_scenario(scenario_id, force=True)`。
+跨 Endpoint Scenario 的删除在单一 SQLite transaction 中完成；物理删除会使 Scenario Context
+Cache 失效，而 Endpoint Embedding Index 会在下一次 Recall 时根据 sample hash signature 自动收敛。
+
 ## v1 能力
 
 * SQLite endpoint 物理分表与 scenario membership 跨 endpoint 聚合；
 * 稳定 sample hash、幂等注册计数和原子调用计数；
+* 引用计数 unregister、强制 sample delete 和原子跨 Endpoint scenario delete；
 * 不泄漏当前答案的 scenario context sculpting；
 * local semantic / lane context recall 及五种 fusion mode；
 * quantile binning、Laplace smoothing、LLR calibration 与 Bayes-style scoring；

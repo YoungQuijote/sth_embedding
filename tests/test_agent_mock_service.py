@@ -53,7 +53,7 @@ def test_hash_and_duplicate_registration(repository):
     original = sample()
     assert (
         compute_sample_hash(original)
-        == "fde8adf43498ca5f0f178d2bea1946cda41e0a5b5a6f75dd0311c20df9941170"
+        == "589e3ef990f35ff6b05ff81f805ddf2ee6f01f786b4dc4773544fb511197372b"
     )
     first = repository.register(original)
     second = repository.register(original)

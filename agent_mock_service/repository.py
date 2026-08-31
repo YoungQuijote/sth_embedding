@@ -20,6 +20,29 @@ from .domain import (
     ScenarioPosition,
 )
 
+SAMPLE_HASH_VERSION = "2"
+INCOMPATIBLE_DATABASE_MESSAGE = (
+    "Existing AgentMockService SQLite database uses an incompatible sample hash/schema "
+    "version. Rebuild or migrate the database."
+)
+
+
+def _features_payload(sample: MockSample) -> dict[str, Any]:
+    return {
+        "hard": sample.features.hard_features,
+        "soft": sample.features.soft_features,
+    }
+
+
+def _canonical_affinity(affinity: RequestAffinityInfo) -> dict[str, str | None]:
+    return {
+        "request_ip": affinity.request_ip,
+        "subnet_mask": affinity.subnet_mask,
+        "user_agent": affinity.user_agent,
+        "auth_identity_hash": affinity.auth_identity_hash,
+        "trace_header": affinity.trace_header,
+    }
+
 
 def compute_sample_hash(sample: MockSample) -> str:
     payload = {
@@ -28,8 +51,13 @@ def compute_sample_hash(sample: MockSample) -> str:
         "mocked_answer": sample.mocked_answer.strip(),
         "sample_id": str(sample.sample_id).strip(),
         "round_id": str(sample.round_id).strip(),
+        "position_id": sample.position_id,
+        "features": _features_payload(sample),
     }
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as error:
+        raise TypeError("MockSample features must be stably JSON-serializable") from error
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -62,7 +90,24 @@ class SQLiteRepository:
         CREATE INDEX IF NOT EXISTS idx_membership_scenario ON scenario_membership(scenario_id);
         CREATE TABLE IF NOT EXISTS calibration_profiles(
           version TEXT PRIMARY KEY, profile_json TEXT NOT NULL, created_at REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS repository_metadata(
+          key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
+        metadata = self._connection.execute(
+            "SELECT value FROM repository_metadata WHERE key='sample_hash_version'"
+        ).fetchone()
+        if metadata is None:
+            has_facts = self._connection.execute(
+                "SELECT 1 FROM scenario_membership LIMIT 1"
+            ).fetchone()
+            if has_facts:
+                raise RuntimeError(INCOMPATIBLE_DATABASE_MESSAGE)
+            self._connection.execute(
+                "INSERT INTO repository_metadata VALUES('sample_hash_version', ?)",
+                (SAMPLE_HASH_VERSION,),
+            )
+        elif metadata[0] != SAMPLE_HASH_VERSION:
+            raise RuntimeError(INCOMPATIBLE_DATABASE_MESSAGE)
         try:
             self._connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_membership_position "
@@ -117,9 +162,10 @@ class SQLiteRepository:
             if existing_position and existing_position[0] != sample_hash:
                 raise ValueError("scenario_id + position_id must identify one stable sample")
             features = json.dumps(
-                {"hard": sample.features.hard_features, "soft": sample.features.soft_features},
+                _features_payload(sample),
                 ensure_ascii=False,
-                default=str,
+                sort_keys=True,
+                separators=(",", ":"),
             )
             self._connection.execute(
                 f'''INSERT INTO "{table}" VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
@@ -139,19 +185,19 @@ class SQLiteRepository:
                     now,
                 ),
             )
-            affinities = (
-                []
-                if affinity is None
-                else [
-                    affinity.__dict__
-                    if hasattr(affinity, "__dict__")
-                    else {name: getattr(affinity, name) for name in affinity.__slots__}
-                ]
-            )
+            existing_membership = self._connection.execute(
+                "SELECT affinity_json FROM scenario_membership WHERE sample_hash=?",
+                (sample_hash,),
+            ).fetchone()
+            affinities = json.loads(existing_membership[0]) if existing_membership else []
+            if affinity is not None:
+                canonical_affinity = _canonical_affinity(affinity)
+                if canonical_affinity not in affinities:
+                    affinities.append(canonical_affinity)
             try:
                 self._connection.execute(
                     "INSERT INTO scenario_membership VALUES(?,?,?,?,?) "
-                    "ON CONFLICT(sample_hash) DO NOTHING",
+                    "ON CONFLICT(sample_hash) DO UPDATE SET affinity_json=excluded.affinity_json",
                     (
                         str(sample.sample_id),
                         sample.endpoint_id,
@@ -208,6 +254,120 @@ class SQLiteRepository:
             f'SELECT * FROM "{table}" WHERE sample_hash=?', (sample_hash,)
         ).fetchone()
         return self._row_to_sample(row) if row else None
+
+    def _delete_locked(
+        self, sample_hash: str, member: sqlite3.Row | None = None
+    ) -> tuple[bool, str | None]:
+        member = (
+            member
+            or self._connection.execute(
+                "SELECT * FROM scenario_membership WHERE sample_hash=?", (sample_hash,)
+            ).fetchone()
+        )
+        if member is None:
+            return False, None
+        table = self._table(member["endpoint_id"])
+        cursor = self._connection.execute(
+            f'DELETE FROM "{table}" WHERE sample_hash=?', (sample_hash,)
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("sample fact and scenario_membership are inconsistent")
+        membership_cursor = self._connection.execute(
+            "DELETE FROM scenario_membership WHERE sample_hash=?", (sample_hash,)
+        )
+        if membership_cursor.rowcount != 1:
+            raise RuntimeError("sample fact and scenario_membership are inconsistent")
+        return True, str(member["scenario_id"])
+
+    def _unregister_locked(
+        self,
+        sample_hash: str,
+        affinity: RequestAffinityInfo | None = None,
+        member: sqlite3.Row | None = None,
+    ) -> tuple[bool, str | None]:
+        member = (
+            member
+            or self._connection.execute(
+                "SELECT * FROM scenario_membership WHERE sample_hash=?", (sample_hash,)
+            ).fetchone()
+        )
+        if member is None:
+            return False, None
+        table = self._table(member["endpoint_id"])
+        row = self._connection.execute(
+            f'SELECT registry_times FROM "{table}" WHERE sample_hash=?', (sample_hash,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("sample fact and scenario_membership are inconsistent")
+        if row["registry_times"] <= 1:
+            return self._delete_locked(sample_hash, member)
+        self._connection.execute(
+            f'UPDATE "{table}" SET registry_times=registry_times-1, updated_at=? '
+            "WHERE sample_hash=?",
+            (time.time(), sample_hash),
+        )
+        if affinity is not None:
+            affinities = json.loads(member["affinity_json"])
+            canonical_affinity = _canonical_affinity(affinity)
+            if canonical_affinity in affinities:
+                affinities.remove(canonical_affinity)
+                self._connection.execute(
+                    "UPDATE scenario_membership SET affinity_json=? WHERE sample_hash=?",
+                    (
+                        json.dumps(
+                            affinities,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        sample_hash,
+                    ),
+                )
+        return False, None
+
+    def unregister(self, sample_hash: str, affinity: RequestAffinityInfo | None = None) -> bool:
+        """Undo one registration; return True only when the fact is physically deleted."""
+        with self._lock:
+            with self._connection:
+                deleted, scenario_id = self._unregister_locked(sample_hash, affinity)
+            if deleted and scenario_id is not None:
+                self.context_cache.invalidate(scenario_id)
+            return deleted
+
+    def delete(self, sample_hash: str) -> bool:
+        """Idempotently force-delete one sample regardless of registry_times."""
+        with self._lock:
+            with self._connection:
+                deleted, scenario_id = self._delete_locked(sample_hash)
+            if deleted and scenario_id is not None:
+                self.context_cache.invalidate(scenario_id)
+            return deleted
+
+    def delete_scenario(
+        self,
+        scenario_id: str,
+        *,
+        force: bool = False,
+        affinity: RequestAffinityInfo | None = None,
+    ) -> int:
+        """Atomically unregister or force-delete every cross-endpoint scenario position."""
+        with self._lock:
+            physically_deleted = False
+            with self._connection:
+                members = self._connection.execute(
+                    "SELECT * FROM scenario_membership WHERE scenario_id=? ORDER BY position_id",
+                    (str(scenario_id),),
+                ).fetchall()
+                for member in members:
+                    deleted, _ = (
+                        self._delete_locked(member["sample_hash"], member)
+                        if force
+                        else self._unregister_locked(member["sample_hash"], affinity, member)
+                    )
+                    physically_deleted = physically_deleted or deleted
+            if physically_deleted:
+                self.context_cache.invalidate(str(scenario_id))
+            return len(members)
 
     def increment_invoked(self, sample_hash: str) -> None:
         with self._lock, self._connection:
