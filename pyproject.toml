@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-mock-service"
+version = "0.1.0"
+description = "Deterministic stateful semantic mock runtime for agent QA"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+semantic = ["sentence-transformers"]
+api = ["fastapi>=0.135", "uvicorn"]
+all = ["sentence-transformers", "fastapi>=0.135", "uvicorn"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.setuptools.packages.find]
+include = ["agent_mock_service*"]
