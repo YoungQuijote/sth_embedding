@@ -409,24 +409,21 @@ class SQLiteRepository:
         return Scenario(str(scenario_id), positions, affinities)
 
     def get(self, scenario_id: str) -> Scenario[Any, Any] | None:
-        scenario = self.get_facts(scenario_id)
-        if scenario is None:
-            return None
+        scenarios = self.get_many([scenario_id])
+        return scenarios[0] if scenarios else None
+
+    def _context_key(self, scenario: Scenario[Any, Any]) -> tuple[str, str]:
         data_fingerprint = hashlib.sha256(
             "|".join(position.sample.sample_hash for position in scenario.positions).encode()
         ).hexdigest()
         encoder_fingerprint = self.context_builder.fingerprint if self.context_builder else "none"
-        cached = self.context_cache.get(str(scenario_id), encoder_fingerprint, data_fingerprint)
-        if cached is None:
-            result = self.context_builder.build(scenario) if self.context_builder else scenario
-            self.context_cache.put(
-                str(scenario_id),
-                encoder_fingerprint,
-                data_fingerprint,
-                {position.position: position.context for position in result.positions},
-            )
-            return result
-        # Rehydrate dynamic SQLite facts on every read while reusing derived contexts.
+        return encoder_fingerprint, data_fingerprint
+
+    @staticmethod
+    def _rehydrate(
+        scenario: Scenario[Any, Any], contexts: dict[int, ScenarioContext]
+    ) -> Scenario[Any, Any]:
+        """Combine fresh dynamic facts with cached static derived contexts."""
         return Scenario(
             scenario.scenario_id,
             [
@@ -434,7 +431,7 @@ class SQLiteRepository:
                     position.scenario_id,
                     position.position,
                     position.sample,
-                    cached[position.position],
+                    contexts[position.position],
                     position.features,
                 )
                 for position in scenario.positions
@@ -450,11 +447,43 @@ class SQLiteRepository:
         self.context_builder = builder
 
     def get_many(self, scenario_ids: Iterable[str]) -> list[Scenario[Any, Any]]:
-        return [
+        # SQLite reads and cache decisions remain serial on the caller thread. Only
+        # independent business fusion calls are fanned out by the context builder.
+        ordered_facts = [
             scenario
             for scenario_id in scenario_ids
-            if (scenario := self.get(scenario_id)) is not None
+            if (scenario := self.get_facts(scenario_id)) is not None
         ]
+        results: list[Scenario[Any, Any] | None] = [None] * len(ordered_facts)
+        cold: list[Scenario[Any, Any]] = []
+        cold_metadata: list[tuple[int, str, str]] = []
+
+        for index, scenario in enumerate(ordered_facts):
+            encoder_fingerprint, data_fingerprint = self._context_key(scenario)
+            cached = self.context_cache.get(
+                scenario.scenario_id, encoder_fingerprint, data_fingerprint
+            )
+            if cached is not None:
+                results[index] = self._rehydrate(scenario, cached)
+            else:
+                cold.append(scenario)
+                cold_metadata.append((index, encoder_fingerprint, data_fingerprint))
+
+        built = (
+            self.context_builder.build_many(cold)
+            if self.context_builder is not None and cold
+            else cold
+        )
+        for scenario, (index, encoder_fingerprint, data_fingerprint) in zip(
+            built, cold_metadata, strict=True
+        ):
+            contexts = {position.position: position.context for position in scenario.positions}
+            self.context_cache.put(
+                scenario.scenario_id, encoder_fingerprint, data_fingerprint, contexts
+            )
+            results[index] = scenario
+
+        return [scenario for scenario in results if scenario is not None]
 
     def list_all(self) -> list[MockSample]:
         endpoints = self._connection.execute(

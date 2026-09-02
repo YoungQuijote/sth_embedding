@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import Future
 from typing import Any, Iterable
 
 from .contracts import ContextFusionProvider, EmbeddingEncoder, FeatureComparator
@@ -72,9 +73,10 @@ class LaneContextRecaller:
         fusion: ContextFusionProvider,
     ) -> list[ContextRecallCandidate]:
         candidates: list[ContextRecallCandidate] = []
-        for lane in lanes:
-            from .domain import ContextMessage
+        from .domain import ContextMessage
 
+        plans = []
+        for lane in lanes:
             messages = []
             for interaction in lane.interactions:
                 messages.extend(
@@ -84,7 +86,23 @@ class LaneContextRecaller:
                     )
                 )
             messages.append(ContextMessage("question", query))
-            runtime_context = self.execution_resources.call_component(fusion, fusion.fuse, messages)
+            plans.append((lane, messages))
+
+        # Fan out all managed lane fusions before resolving any one lane. Unmanaged
+        # providers intentionally retain direct synchronous execution.
+        fused_values: list[str | Future[str] | None] = [
+            self.execution_resources.submit_component(fusion, fusion.fuse, messages)
+            for _, messages in plans
+        ]
+        for index, (_, messages) in enumerate(plans):
+            if fused_values[index] is None:
+                fused_values[index] = fusion.fuse(messages)
+
+        for (lane, _), fused_value in zip(plans, fused_values, strict=True):
+            runtime_context = (
+                fused_value.result() if isinstance(fused_value, Future) else fused_value
+            )
+            assert runtime_context is not None
             runtime_embedding = self.encoder.encode_query(runtime_context)
             for scenario_id in lane.scenario_hypotheses:
                 scenario = scenarios.get(scenario_id)

@@ -76,6 +76,10 @@ features = resources.call_component(extractor, extractor.extract, mocked_query)
 
 资源 ID 必须先注册；同一 ID 不允许静默改变容量。该治理仅覆盖当前进程，应用关闭时应调用
 `resources.shutdown()`；多进程部署的总并发仍需由外部基础设施约束。
+`call_component()` 是“提交并立即等待”的同步 API，适合单次 Feature/Judge 调用；Scenario
+Position 和 Lane Context 等批量独立 Fusion 则使用 `submit_component()` 先整体 fan-out、再按原顺序
+fan-in。Repository 会先串行读取事实并分流 Context Cache hit/miss，只对当前批次的冷 Scenario
+统一执行 Fusion fan-out，不会把 SQLite 操作投入线程池。
 
 Repository、Encoder、Lane、Calibration 和 Trace 保持 Service 级共享；Parser、Feature、Fusion、
 Affinity 与 Judge 按请求 Endpoint 路由。SQLite 的 `(scenario_id, position_id)` 现在是跨

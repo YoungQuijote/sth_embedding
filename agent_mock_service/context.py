@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import Future
-from typing import Any
+from typing import Any, Sequence
 
 import hashlib
 
@@ -37,6 +37,56 @@ class ScenarioContextBuilder:
         return f"{self.encoder.fingerprint}:{fusion_fingerprint}"
 
     def build(self, scenario: Scenario[Any, Any]) -> Scenario[Any, Any]:
+        return self.build_many([scenario])[0]
+
+    def build_many(self, scenarios: Sequence[Scenario[Any, Any]]) -> list[Scenario[Any, Any]]:
+        """Fuse a cold scenario batch with one managed fan-out/fan-in boundary."""
+        scenario_plans = [self._prepare(scenario) for scenario in scenarios]
+        flat_plans = [plan for plans in scenario_plans for plan in plans]
+
+        # Fan out every managed position in every scenario before waiting for any
+        # result. The resource-scoped executors remain the sole concurrency limit.
+        fused_values: list[str | Future[str] | None] = [
+            self.execution_resources.submit_component(fusion, fusion.fuse, inputs)
+            for _, inputs, _, fusion in flat_plans
+        ]
+        for index, (_, inputs, _, fusion) in enumerate(flat_plans):
+            if fused_values[index] is None:
+                fused_values[index] = fusion.fuse(inputs)
+
+        results: list[Scenario[Any, Any]] = []
+        offset = 0
+        for scenario, plans in zip(scenarios, scenario_plans, strict=True):
+            values = fused_values[offset : offset + len(plans)]
+            offset += len(plans)
+            positions: list[ScenarioPosition[Any, Any]] = []
+            for (position, _, raw, _), fused_value in zip(plans, values, strict=True):
+                fused = fused_value.result() if isinstance(fused_value, Future) else fused_value
+                assert fused is not None
+                positions.append(
+                    ScenarioPosition(
+                        position.scenario_id,
+                        position.position,
+                        position.sample,
+                        ScenarioContext(raw, fused, self.encoder.encode_document(fused)),
+                        position.features,
+                    )
+                )
+            results.append(
+                Scenario(scenario.scenario_id, positions, scenario.registry_affinity_infos)
+            )
+        return results
+
+    def _prepare(
+        self, scenario: Scenario[Any, Any]
+    ) -> list[
+        tuple[
+            ScenarioPosition[Any, Any],
+            list[ContextMessage],
+            str,
+            ContextFusionProvider,
+        ]
+    ]:
         ordered = sorted(
             scenario.positions, key=lambda item: (_round_key(item.sample.round_id), item.position)
         )
@@ -68,31 +118,7 @@ class ScenarioContextBuilder:
                 )
             )
 
-        # Submit all managed calls before waiting so one shared resource can execute the
-        # independent position fusions concurrently without creating per-build pools.
-        fused_values: list[str | Future[str] | None] = []
-        for _, inputs, _, fusion in plans:
-            fused_values.append(
-                self.execution_resources.submit_component(fusion, fusion.fuse, inputs)
-            )
-        for index, (_, inputs, _, fusion) in enumerate(plans):
-            if fused_values[index] is None:
-                fused_values[index] = fusion.fuse(inputs)
-
-        positions: list[ScenarioPosition[Any, Any]] = []
-        for (position, _, raw, _), fused_value in zip(plans, fused_values, strict=True):
-            fused = fused_value.result() if isinstance(fused_value, Future) else fused_value
-            assert fused is not None
-            positions.append(
-                ScenarioPosition(
-                    position.scenario_id,
-                    position.position,
-                    position.sample,
-                    ScenarioContext(raw, fused, self.encoder.encode_document(fused)),
-                    position.features,
-                )
-            )
-        return Scenario(scenario.scenario_id, positions, scenario.registry_affinity_infos)
+        return plans
 
 
 def _round_key(value: str | int) -> tuple[int, int | str]:

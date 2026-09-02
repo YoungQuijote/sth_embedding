@@ -79,6 +79,7 @@ class ExecutionResourcePool:
         *args: Any,
         **kwargs: Any,
     ) -> ResultT:
+        """Execute directly or submit and synchronously wait for a managed component."""
         resource_id = getattr(component, "execution_resource_id", None)
         if resource_id is None:
             return fn(*args, **kwargs)
@@ -91,6 +92,7 @@ class ExecutionResourcePool:
         *args: Any,
         **kwargs: Any,
     ) -> Future[ResultT] | None:
+        """Submit a managed component for fan-out; return None when it is unmanaged."""
         resource_id = getattr(component, "execution_resource_id", None)
         if resource_id is None:
             return None
