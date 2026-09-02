@@ -15,6 +15,7 @@ from .domain import (
     RecallFusionMode,
     Scenario,
 )
+from .execution import ExecutionResourcePool
 
 
 class SemanticRecaller:
@@ -53,8 +54,13 @@ class SemanticRecaller:
 
 
 class LaneContextRecaller:
-    def __init__(self, encoder: EmbeddingEncoder) -> None:
+    def __init__(
+        self,
+        encoder: EmbeddingEncoder,
+        execution_resources: ExecutionResourcePool | None = None,
+    ) -> None:
         self.encoder = encoder
+        self.execution_resources = execution_resources or ExecutionResourcePool()
 
     def recall(
         self,
@@ -78,7 +84,7 @@ class LaneContextRecaller:
                     )
                 )
             messages.append(ContextMessage("question", query))
-            runtime_context = fusion.fuse(messages)
+            runtime_context = self.execution_resources.call_component(fusion, fusion.fuse, messages)
             runtime_embedding = self.encoder.encode_query(runtime_context)
             for scenario_id in lane.scenario_hypotheses:
                 scenario = scenarios.get(scenario_id)

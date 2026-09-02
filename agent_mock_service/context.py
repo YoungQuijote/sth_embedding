@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import Future
 from typing import Any
 
 import hashlib
 
 from .contracts import ContextFusionProvider, EmbeddingEncoder, FusionProviderResolver
 from .domain import ContextMessage, Scenario, ScenarioContext, ScenarioPosition
+from .execution import ExecutionResourcePool
 
 
 class ScenarioContextBuilder:
@@ -16,9 +18,11 @@ class ScenarioContextBuilder:
         self,
         fusion: ContextFusionProvider | FusionProviderResolver,
         encoder: EmbeddingEncoder,
+        execution_resources: ExecutionResourcePool | None = None,
     ) -> None:
         self.fusion = fusion
         self.encoder = encoder
+        self.execution_resources = execution_resources or ExecutionResourcePool()
 
     def _resolve_fusion(self, endpoint_id: str) -> ContextFusionProvider:
         resolver = getattr(self.fusion, "resolve", None)
@@ -37,7 +41,14 @@ class ScenarioContextBuilder:
             scenario.positions, key=lambda item: (_round_key(item.sample.round_id), item.position)
         )
         history: list[ContextMessage] = []
-        positions: list[ScenarioPosition[Any, Any]] = []
+        plans: list[
+            tuple[
+                ScenarioPosition[Any, Any],
+                list[ContextMessage],
+                str,
+                ContextFusionProvider,
+            ]
+        ] = []
         current_round: str | int | None = None
         round_facts: list[ContextMessage] = []
         for position in ordered:
@@ -47,7 +58,31 @@ class ScenarioContextBuilder:
             current_round = position.sample.round_id
             inputs = [*history, ContextMessage("question", position.sample.mocked_query)]
             raw = serialize_context_messages(inputs)
-            fused = self._resolve_fusion(position.sample.endpoint_id).fuse(inputs)
+            fusion = self._resolve_fusion(position.sample.endpoint_id)
+            plans.append((position, inputs, raw, fusion))
+            # Same-round positions are unordered and therefore cannot see sibling answers.
+            round_facts.extend(
+                (
+                    ContextMessage("question", position.sample.mocked_query),
+                    ContextMessage("answer", position.sample.mocked_answer),
+                )
+            )
+
+        # Submit all managed calls before waiting so one shared resource can execute the
+        # independent position fusions concurrently without creating per-build pools.
+        fused_values: list[str | Future[str] | None] = []
+        for _, inputs, _, fusion in plans:
+            fused_values.append(
+                self.execution_resources.submit_component(fusion, fusion.fuse, inputs)
+            )
+        for index, (_, inputs, _, fusion) in enumerate(plans):
+            if fused_values[index] is None:
+                fused_values[index] = fusion.fuse(inputs)
+
+        positions: list[ScenarioPosition[Any, Any]] = []
+        for (position, _, raw, _), fused_value in zip(plans, fused_values, strict=True):
+            fused = fused_value.result() if isinstance(fused_value, Future) else fused_value
+            assert fused is not None
             positions.append(
                 ScenarioPosition(
                     position.scenario_id,
@@ -55,13 +90,6 @@ class ScenarioContextBuilder:
                     position.sample,
                     ScenarioContext(raw, fused, self.encoder.encode_document(fused)),
                     position.features,
-                )
-            )
-            # Same-round positions are unordered and therefore cannot see sibling answers.
-            round_facts.extend(
-                (
-                    ContextMessage("question", position.sample.mocked_query),
-                    ContextMessage("answer", position.sample.mocked_answer),
                 )
             )
         return Scenario(scenario.scenario_id, positions, scenario.registry_affinity_infos)

@@ -55,6 +55,28 @@ plugins.register(BusinessPlugin(
 runtime = AgentMockRuntime(repository, business_plugins=plugins)
 ```
 
+业务组件可用 `execution_resource_id` 显式声明其共享的昂贵后端，并由 Service 级资源池统一治理
+进程内并发。使用同一 ID 的 FeatureExtractor、FusionProvider、Judge，以及 Control Plane 调用，
+会共享同一个长期存活的 executor；未声明该属性的旧组件仍同步直接执行：
+
+```python
+from agent_mock_service import ExecutionResourcePool
+
+resources = ExecutionResourcePool()
+resources.register("business-llm", max_concurrency=8)
+runtime = AgentMockRuntime(
+    repository,
+    business_plugins=plugins,
+    execution_resources=resources,
+)
+
+# 注册阶段也可主动纳入同一容量边界。
+features = resources.call_component(extractor, extractor.extract, mocked_query)
+```
+
+资源 ID 必须先注册；同一 ID 不允许静默改变容量。该治理仅覆盖当前进程，应用关闭时应调用
+`resources.shutdown()`；多进程部署的总并发仍需由外部基础设施约束。
+
 Repository、Encoder、Lane、Calibration 和 Trace 保持 Service 级共享；Parser、Feature、Fusion、
 Affinity 与 Judge 按请求 Endpoint 路由。SQLite 的 `(scenario_id, position_id)` 现在是跨
 Endpoint 唯一键；含有重复位置的旧数据库会在启动时被拒绝，需要先迁移或重建。
@@ -91,6 +113,8 @@ Cache 失效，而 Endpoint Embedding Index 会在下一次 Recall 时根据 sam
 * 不泄漏当前答案的 scenario context sculpting；
 * local semantic / lane context recall 及五种 fusion mode；
 * quantile binning、Laplace smoothing、LLR calibration 与 Bayes-style scoring；
+* Availability raw signal 与加权 log-score contribution 分离（默认最大 bonus 为 `ln(1.2)`）；
+* Service 级、跨 Query/Plugin/Stage 共享的进程内 ExecutionResourcePool；
 * 内存 Lane、当前轮加下一轮滑动窗口和 TTL；
 * 同一 Scenario 的多 Lane runtime path、候选级 Lane context 隔离；
 * 多 Endpoint BusinessPlugin 路由与跨 Endpoint Scenario/Lane；

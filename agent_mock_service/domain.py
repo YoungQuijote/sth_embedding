@@ -217,6 +217,7 @@ class PositionScore:
     feature_llr: float = 0.0
     affinity_llr: float = 0.0
     transition_prior: float = 0.0
+    availability_raw: float = 0.0
     availability_prior: float = 0.0
     total_log_score: float = 0.0
     posterior: float = 0.0

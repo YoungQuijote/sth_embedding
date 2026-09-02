@@ -18,6 +18,7 @@ class RuntimeConfig:
     lane_ttl_seconds: float = 900.0
     availability_alpha: float = 1.0
     availability_gamma: float = 2.0
+    availability_prior_weight: float = 0.1823215567939546
     default_response_protocol: ResponseProtocol = ResponseProtocol.HTTP_JSON
     sentence_transformer_encoder: str | None = SENTENCE_TRANSFORMER_ENCODER
     bootstrap_hard_negative_k: int = 3

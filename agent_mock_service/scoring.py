@@ -24,11 +24,18 @@ from .domain import (
 )
 
 
-def availability_prior(
+def availability_raw(
     availability: InvokeAvailability, alpha: float = 1.0, gamma: float = 2.0
 ) -> float:
     capacity = 1.0 + alpha * math.log(max(1, availability.registry_times))
     return (max(capacity - availability.invoked_times, 0.0) / capacity) ** gamma
+
+
+def availability_prior(
+    availability: InvokeAvailability, alpha: float = 1.0, gamma: float = 2.0
+) -> float:
+    """Backward-compatible name for the unweighted availability raw signal."""
+    return availability_raw(availability, alpha, gamma)
 
 
 def transition_prior(ordinal_distance: int | None, table: dict[int, float], floor: float) -> float:
@@ -54,12 +61,14 @@ class BayesPositionScorer:
         transition_floor: float,
         availability_alpha: float,
         availability_gamma: float,
+        availability_prior_weight: float = 0.1823215567939546,
     ) -> None:
         self.profile = profile
         self.transition_table = transition_table
         self.transition_floor = transition_floor
         self.availability_alpha = availability_alpha
         self.availability_gamma = availability_gamma
+        self.availability_prior_weight = availability_prior_weight
 
     def score(self, evidence: PositionPathEvidence) -> PositionScore:
         semantic_llr = calibrated_llr(self.profile, "semantic", evidence.scenario_semantic_raw)
@@ -69,9 +78,10 @@ class BayesPositionScorer:
         transition = transition_prior(
             evidence.transition_distance, self.transition_table, self.transition_floor
         )
-        availability_value = availability_prior(
+        availability_raw_value = availability_raw(
             evidence.availability, self.availability_alpha, self.availability_gamma
         )
+        availability_value = self.availability_prior_weight * availability_raw_value
         total = (
             semantic_llr
             + context_llr
@@ -94,6 +104,7 @@ class BayesPositionScorer:
             feature_llr,
             affinity_llr,
             transition,
+            availability_raw_value,
             availability_value,
             total,
         )

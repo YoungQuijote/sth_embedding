@@ -29,6 +29,7 @@ from .defaults import (
     create_default_encoder,
 )
 from .domain import JudgeCandidate, MatchDecision, MockRequest, MockResponse, RuntimeInteraction
+from .execution import ExecutionResourcePool
 from .judge import FakeJudge
 from .lane import LaneManager
 from .plugin import BusinessPlugin, BusinessPluginRegistry
@@ -60,10 +61,12 @@ class AgentMockRuntime:
         renderers: ResponseRendererRegistry | None = None,
         trace: TraceWriter | None = None,
         business_plugins: BusinessPluginRegistry | None = None,
+        execution_resources: ExecutionResourcePool | None = None,
     ) -> None:
         self.repository = repository
         self.config = config or RuntimeConfig()
         self.encoder = encoder or create_default_encoder(self.config.sentence_transformer_encoder)
+        self.execution_resources = execution_resources or ExecutionResourcePool()
         self.default_affinity_extractor = affinity_extractor or DefaultAffinityExtractor()
         if business_plugins is None:
             default_plugin = BusinessPlugin(
@@ -103,7 +106,7 @@ class AgentMockRuntime:
         if calibration is not None and calibration.encoder_fingerprint != self.encoder.fingerprint:
             raise ValueError("calibration and runtime encoder fingerprints differ")
         self.repository.bind_context_builder(
-            ScenarioContextBuilder(self.business_plugins, self.encoder)
+            ScenarioContextBuilder(self.business_plugins, self.encoder, self.execution_resources)
         )
         if calibration is not None:
             self.calibration = calibration
@@ -125,7 +128,7 @@ class AgentMockRuntime:
         self.renderers = renderers or ResponseRendererRegistry()
         self.trace = trace or MemoryTraceWriter()
         self.semantic_recaller = SemanticRecaller(self.encoder)
-        self.context_recaller = LaneContextRecaller(self.encoder)
+        self.context_recaller = LaneContextRecaller(self.encoder, self.execution_resources)
         self.evidence_builder = BayesEvidenceBuilder()
         self.scorer = BayesPositionScorer(
             self.calibration,
@@ -133,6 +136,7 @@ class AgentMockRuntime:
             self.config.transition_floor,
             self.config.availability_alpha,
             self.config.availability_gamma,
+            self.config.availability_prior_weight,
         )
         self.aggregator = ScenarioScoreAggregator()
 
@@ -176,7 +180,9 @@ class AgentMockRuntime:
                 )
             affinity_extractor = plugin.affinity_extractor or self.default_affinity_extractor
             affinity = affinity_extractor.extract(request.headers)
-            features = plugin.feature_extractor.extract(query)
+            features = self.execution_resources.call_component(
+                plugin.feature_extractor, plugin.feature_extractor.extract, query
+            )
             trace_event["request_affinity"] = asdict(affinity)
             trace_event["timing"]["parse_feature_ms"] = (time.perf_counter() - stage) * 1000
             stage = time.perf_counter()
@@ -251,7 +257,9 @@ class AgentMockRuntime:
                 "candidate_scenario_ids": sorted(scenario_ids),
             }
             trace_event["bayes_scores"] = [asdict(item.score) for item in candidates]
-            result = plugin.judge.judge(query, scenario_candidates)
+            result = self.execution_resources.call_component(
+                plugin.judge, plugin.judge.judge, query, scenario_candidates
+            )
             trace_event["judge"] = {
                 "model": plugin.judge.model_name,
                 "prompt_version": plugin.judge.prompt_version,
