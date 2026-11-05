@@ -6,7 +6,13 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
-from .calibration import CalibrationBootstrapper, CalibrationProfile, neutral_profile
+from .calibration import (
+    CalibrationBootstrapper,
+    CalibrationConfig,
+    CalibrationProfile,
+    neutral_profile,
+)
+from .bm25 import BM25Recaller, DefaultTokenizer
 from .config import RuntimeConfig
 from .context import ScenarioContextBuilder
 from .contracts import (
@@ -19,6 +25,8 @@ from .contracts import (
     Judge,
     QueryParser,
     TraceWriter,
+    Tokenizer,
+    Reranker,
 )
 from .defaults import (
     DefaultAffinityExtractor,
@@ -28,12 +36,21 @@ from .defaults import (
     JoiningContextFusionProvider,
     create_default_encoder,
 )
-from .domain import JudgeCandidate, MatchDecision, MockRequest, MockResponse, RuntimeInteraction
+from .domain import (
+    FeatureRelation,
+    JudgeCandidate,
+    MatchDecision,
+    MockRequest,
+    MockResponse,
+    RecallFusionMode,
+    RuntimeInteraction,
+)
 from .execution import ExecutionResourcePool
 from .judge import FakeJudge
 from .lane import LaneManager
 from .plugin import BusinessPlugin, BusinessPluginRegistry
-from .recall import LaneContextRecaller, SemanticRecaller, fuse_recall
+from .recall import LaneContextRecaller, SemanticRecaller, fuse_recall_candidates
+from .reranker import BiEncoderReranker
 from .repository import SQLiteRepository
 from .response import ResponseRendererRegistry
 from .scoring import BayesEvidenceBuilder, BayesPositionScorer, ScenarioScoreAggregator
@@ -62,11 +79,15 @@ class AgentMockRuntime:
         trace: TraceWriter | None = None,
         business_plugins: BusinessPluginRegistry | None = None,
         execution_resources: ExecutionResourcePool | None = None,
+        tokenizer: Tokenizer | None = None,
+        reranker: Reranker | None = None,
+        calibration_config: CalibrationConfig | None = None,
     ) -> None:
         self.repository = repository
         self.config = config or RuntimeConfig()
         self.encoder = encoder or create_default_encoder(self.config.sentence_transformer_encoder)
         self.execution_resources = execution_resources or ExecutionResourcePool()
+        self.default_tokenizer = tokenizer or DefaultTokenizer()
         self.default_affinity_extractor = affinity_extractor or DefaultAffinityExtractor()
         if business_plugins is None:
             default_plugin = BusinessPlugin(
@@ -117,7 +138,18 @@ class AgentMockRuntime:
                 self.config.bootstrap_random_seed,
             )
             self.calibration = bootstrapper.load_or_bootstrap(
-                repository, self.encoder, calibration_corpus
+                repository,
+                self.encoder,
+                calibration_corpus,
+                config=calibration_config,
+                tokenizer=self.default_tokenizer,
+                feature_comparator=(
+                    self.business_plugins.default_plugin.feature_comparator
+                    if self.business_plugins.default_plugin
+                    else None
+                ),
+                bm25_k1=self.config.bm25_k1,
+                bm25_b=self.config.bm25_b,
             )
         else:
             logging.getLogger(__name__).warning(
@@ -128,7 +160,11 @@ class AgentMockRuntime:
         self.renderers = renderers or ResponseRendererRegistry()
         self.trace = trace or MemoryTraceWriter()
         self.semantic_recaller = SemanticRecaller(self.encoder)
+        self.bm25_recallers: dict[str, BM25Recaller] = {}
         self.context_recaller = LaneContextRecaller(self.encoder, self.execution_resources)
+        if reranker is None and self.config.reranker_type != "bi_encoder":
+            raise ValueError("non-default reranker_type requires an explicit Reranker instance")
+        self.default_reranker = reranker or BiEncoderReranker(self.encoder)
         self.evidence_builder = BayesEvidenceBuilder()
         self.scorer = BayesPositionScorer(
             self.calibration,
@@ -137,6 +173,7 @@ class AgentMockRuntime:
             self.config.availability_alpha,
             self.config.availability_gamma,
             self.config.availability_prior_weight,
+            self.config.runtime_llr_weights,
         )
         self.aggregator = ScenarioScoreAggregator()
 
@@ -149,6 +186,7 @@ class AgentMockRuntime:
             "endpoint_id": request.endpoint_id,
             "upstream_request_id": request.upstream_request_id,
             "calibration_version": self.calibration.version,
+            "calibration_evidences": sorted(self.calibration.distributions),
             "timing": {},
         }
         try:
@@ -186,40 +224,116 @@ class AgentMockRuntime:
             trace_event["request_affinity"] = asdict(affinity)
             trace_event["timing"]["parse_feature_ms"] = (time.perf_counter() - stage) * 1000
             stage = time.perf_counter()
-            local = self.semantic_recaller.recall(
-                query,
-                features,
-                samples,
-                self.config.semantic_recall_k,
-                plugin.feature_comparator,
+            single_source = self.config.single_recall_source
+            use_semantic = self.config.recall_fusion_mode not in {
+                RecallFusionMode.SINGLE,
+                RecallFusionMode.CONTEXT_ONLY,
+            } or (
+                self.config.recall_fusion_mode is RecallFusionMode.SINGLE
+                and single_source == "semantic"
             )
-            scenario_ids = {candidate.scenario_id for candidate in local}
+            use_context = self.config.recall_fusion_mode not in {
+                RecallFusionMode.SINGLE,
+                RecallFusionMode.SEMANTIC_ONLY,
+            } or (
+                self.config.recall_fusion_mode is RecallFusionMode.SINGLE
+                and single_source == "context"
+            )
+            use_bm25 = self.config.bm25_enabled and (
+                self.config.recall_fusion_mode in {RecallFusionMode.UNION, RecallFusionMode.RRF}
+                or (
+                    self.config.recall_fusion_mode is RecallFusionMode.SINGLE
+                    and single_source == "bm25"
+                )
+            )
+            local = (
+                self.semantic_recaller.recall(
+                    query,
+                    features,
+                    samples,
+                    self.config.semantic_recall_k,
+                    plugin.feature_comparator,
+                )
+                if use_semantic
+                else []
+            )
+            endpoint_tokenizer = plugin.tokenizer or self.default_tokenizer
+            bm25_key = (
+                f"{request.endpoint_id}:{endpoint_tokenizer.fingerprint}:"
+                f"{self.config.bm25_k1}:{self.config.bm25_b}"
+            )
+            bm25_recaller = self.bm25_recallers.setdefault(
+                bm25_key,
+                BM25Recaller(endpoint_tokenizer, self.config.bm25_k1, self.config.bm25_b),
+            )
+            bm25 = (
+                bm25_recaller.recall(query, samples, self.config.bm25_recall_k) if use_bm25 else []
+            )
+            scenario_ids = {candidate.scenario_id for candidate in local} | {
+                candidate.scenario_id for candidate in bm25
+            }
             active_lanes = self.lanes.active()
-            scenario_ids.update(
-                scenario_id for lane in active_lanes for scenario_id in lane.scenario_hypotheses
-            )
+            if use_context:
+                scenario_ids.update(
+                    scenario_id for lane in active_lanes for scenario_id in lane.scenario_hypotheses
+                )
             scenarios = {
                 scenario.scenario_id: scenario
                 for scenario in self.repository.get_many(scenario_ids)
             }
-            context = self.context_recaller.recall(
-                query,
-                active_lanes,
-                scenarios,
-                request.endpoint_id,
-                self.config.context_recall_k,
-                plugin.fusion,
+            context = (
+                self.context_recaller.recall(
+                    query,
+                    active_lanes,
+                    scenarios,
+                    request.endpoint_id,
+                    self.config.context_recall_k,
+                    plugin.fusion,
+                )
+                if use_context
+                else []
             )
-            local, context = fuse_recall(
+            fused = fuse_recall_candidates(
                 local,
                 context,
+                bm25,
                 self.config.recall_fusion_mode,
-                max(self.config.semantic_recall_k, self.config.context_recall_k),
+                k=self.config.fused_recall_k
+                or max(
+                    self.config.semantic_recall_k,
+                    self.config.context_recall_k,
+                    self.config.bm25_recall_k,
+                ),
+                rrf_k=self.config.rrf_k,
+                single_source=self.config.single_recall_source,
+                samples=samples,
             )
-            trace_event["timing"]["recall_ms"] = (time.perf_counter() - stage) * 1000
-            scenario_ids = {candidate.scenario_id for candidate in local} | {
-                candidate.scenario_id for candidate in context
+            samples_by_position = {
+                (str(sample.sample_id), sample.position_id): sample for sample in samples
             }
+            hard_conflicts = 0
+            eligible = []
+            for candidate in fused:
+                sample = samples_by_position.get((candidate.scenario_id, candidate.position))
+                if sample is None:
+                    continue
+                relation, _ = plugin.feature_comparator.compare(features, sample.features)
+                if relation is FeatureRelation.CONFLICT:
+                    hard_conflicts += 1
+                    continue
+                eligible.append(candidate)
+            reranker = plugin.reranker or self.default_reranker
+            rerank_started = time.perf_counter()
+            fused = self.execution_resources.call_component(
+                reranker,
+                reranker.rerank,
+                query,
+                eligible,
+                top_n=self.config.reranker_top_n,
+            )
+            trace_event["timing"]["rerank_ms"] = (time.perf_counter() - rerank_started) * 1000
+            trace_event["timing"]["recall_ms"] = (time.perf_counter() - stage) * 1000
+            scenario_ids = {candidate.scenario_id for candidate in fused}
             scenarios = {
                 scenario.scenario_id: scenario
                 for scenario in self.repository.get_many(scenario_ids)
@@ -235,6 +349,8 @@ class AgentMockRuntime:
                 context,
                 lanes_by_id,
                 plugin.feature_comparator,
+                bm25,
+                fused,
             ):
                 candidates.append(
                     JudgeCandidate(
@@ -252,9 +368,23 @@ class AgentMockRuntime:
                 candidates, self.config.scenario_recall_n
             )
             trace_event["recall"] = {
-                "local": [asdict(item) | {"sample": None} for item in local],
-                "context": [asdict(item) for item in context],
+                "local": [
+                    asdict(item) | {"sample": None, "rank": rank}
+                    for rank, item in enumerate(local, start=1)
+                ],
+                "context": [
+                    asdict(item) | {"rank": rank} for rank, item in enumerate(context, start=1)
+                ],
+                "bm25": [asdict(item) | {"sample": None} for item in bm25],
+                "fusion_mode": self.config.recall_fusion_mode.value,
+                "fused": [asdict(item) for item in fused],
+                "hard_conflicts": hard_conflicts,
                 "candidate_scenario_ids": sorted(scenario_ids),
+            }
+            trace_event["reranker"] = {
+                "fingerprint": reranker.fingerprint,
+                "input_count": len(eligible),
+                "output_count": len(fused),
             }
             trace_event["bayes_scores"] = [asdict(item.score) for item in candidates]
             result = self.execution_resources.call_component(

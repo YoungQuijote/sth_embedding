@@ -14,6 +14,7 @@ from .domain import (
     RequestAffinityInfo,
     Scenario,
     ScenarioJudgeCandidate,
+    RecallCandidate,
 )
 
 QueryInputT = TypeVar("QueryInputT", contravariant=True)
@@ -45,6 +46,20 @@ class FeatureComparator(Protocol):
 
 class ContextFusionProvider(Protocol):
     def fuse(self, inputs: Sequence[ContextMessage]) -> str: ...
+
+
+class Tokenizer(Protocol):
+    fingerprint: str
+
+    def tokenize(self, text: str) -> list[str]: ...
+
+
+class Reranker(Protocol):
+    fingerprint: str
+
+    def rerank(
+        self, query: str, candidates: Sequence[RecallCandidate], *, top_n: int | None = None
+    ) -> list[RecallCandidate]: ...
 
 
 class FusionProviderResolver(Protocol):

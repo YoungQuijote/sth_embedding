@@ -109,13 +109,50 @@ Cache 失效，而 Endpoint Embedding Index 会在下一次 Recall 时根据 sam
 不会执行 Affinity/Feature Extraction、Semantic Encoding、Context Fusion 或 Judge。多个相同
 `mocked_query` 仍会进入完整 Recall/Judge 链路。
 
+## Hybrid Retrieval 与 Reranker
+
+默认 Recall 使用 `UNION` 合并 Endpoint 范围内的 Semantic、Lane Context 和 BM25 Top-K，且不会
+因为不同来源的原始分数量纲不同而做隐式截断。也可以通过 `RuntimeConfig` 选择确定性的 RRF，
+或用 `SINGLE` + `single_recall_source` 执行 semantic/context/bm25 消融测试；原有
+`SCORE_FUSION`、`HALF`、`DOUBLE` 等模式继续兼容。
+
+BM25 使用按 Endpoint 隔离的内存索引，并根据 Sample Hash、Tokenizer fingerprint 和参数签名
+惰性重建。默认 `DefaultTokenizer` 无外部依赖；可安装 `agent-mock-service[tokenize]` 使用
+`JiebaTokenizer` 和业务词典，也可在 `BusinessPlugin.tokenizer` 注入自定义 Tokenizer。
+
+```python
+config = RuntimeConfig(
+    recall_fusion_mode=RecallFusionMode.RRF,
+    bm25_recall_k=50,
+    bm25_k1=1.5,
+    bm25_b=0.75,
+    rrf_k=60,
+    reranker_top_n=None,  # 默认不因精排降低 Union 覆盖率
+    runtime_llr_weights={
+        "semantic": 1.0,
+        "context": 0.0,
+        "bm25": 0.0,
+        "feature": 0.0,
+    },
+)
+```
+
+默认 `BiEncoderReranker` 复用 Dense Recall 分数；显式设置 Top-N 时才为缺少 Dense 分数的候选
+补算向量。可选 `CrossEncoderReranker` 仅接收 `(Agent Query, mocked_query)`，支持 batch、候选上限、
+ExecutionResourcePool 与故障 fallback，不接收 `mocked_answer`，也不会替代最终 Judge。
+
+`CalibrationBootstrapper` 现在通过 `CalibrationConfig.enabled_evidences` 调度独立的 Semantic、
+Context、BM25 和 Feature Calibrator。默认仍只构建 Semantic；缺少可靠正负样本的 Evidence 会记录
+为 unavailable 并保持中性。Calibration 构建开关与 `runtime_llr_weights` 完全分离，调整运行时
+权重不会重新训练 Profile，未校准 Evidence 也不会把 Raw Score 直接当作 LLR。
+
 ## v1 能力
 
 * SQLite endpoint 物理分表与 scenario membership 跨 endpoint 聚合；
 * 稳定 sample hash、幂等注册计数和原子调用计数；
 * 引用计数 unregister、强制 sample delete 和原子跨 Endpoint scenario delete；
 * 不泄漏当前答案的 scenario context sculpting；
-* local semantic / lane context recall 及五种 fusion mode；
+* Semantic / Lane Context / BM25 三路 Recall，以及 Union、RRF、Single 与 Legacy fusion；
 * quantile binning、Laplace smoothing、LLR calibration 与 Bayes-style scoring；
 * Availability raw signal 与加权 log-score contribution 分离（默认最大 bonus 为 `ln(1.2)`）；
 * Service 级、跨 Query/Plugin/Stage 共享的进程内 ExecutionResourcePool；

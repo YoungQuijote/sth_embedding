@@ -21,6 +21,9 @@ class MatchDecision(str, Enum):
 
 
 class RecallFusionMode(str, Enum):
+    UNION = "union"
+    RRF = "rrf"
+    SINGLE = "single"
     SEMANTIC_ONLY = "semantic_only"
     CONTEXT_ONLY = "context_only"
     SCORE_FUSION = "score_fusion"
@@ -203,6 +206,31 @@ class ContextRecallCandidate:
 
 
 @dataclass(slots=True)
+class BM25RecallCandidate:
+    sample_hash: str
+    scenario_id: str
+    position: int
+    score: float
+    rank: int
+    sample: MockSample
+
+
+@dataclass(slots=True)
+class RecallCandidate:
+    """A fused retrieval path; lane paths remain distinct from local paths."""
+
+    scenario_id: str
+    position: int
+    lane_id: str | None
+    sample_hash: str | None
+    mocked_query: str
+    source_scores: dict[str, float] = field(default_factory=dict)
+    source_ranks: dict[str, int] = field(default_factory=dict)
+    fusion_score: float = 0.0
+    rerank_score: float | None = None
+
+
+@dataclass(slots=True)
 class PositionScore:
     scenario_id: str
     position: int
@@ -210,15 +238,19 @@ class PositionScore:
     scenario_semantic_raw: float | None = None
     position_semantic_raw: float | None = None
     context_raw: float | None = None
+    bm25_raw: float | None = None
     feature_raw: float | None = None
     affinity_raw: float | None = None
     semantic_llr: float = 0.0
     context_llr: float = 0.0
+    bm25_llr: float = 0.0
     feature_llr: float = 0.0
     affinity_llr: float = 0.0
     transition_prior: float = 0.0
     availability_raw: float = 0.0
     availability_prior: float = 0.0
+    evidence_weights: dict[str, float] = field(default_factory=dict)
+    evidence_contributions: dict[str, float] = field(default_factory=dict)
     total_log_score: float = 0.0
     posterior: float = 0.0
 
@@ -236,6 +268,7 @@ class PositionPathEvidence:
     round_id: str | int
     availability: InvokeAvailability
     transition_distance: int | None
+    bm25_raw: float | None = None
 
 
 @dataclass(slots=True)

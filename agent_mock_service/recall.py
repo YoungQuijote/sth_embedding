@@ -8,12 +8,14 @@ from .contracts import ContextFusionProvider, EmbeddingEncoder, FeatureComparato
 from .defaults import cosine_similarity
 from .domain import (
     ContextRecallCandidate,
+    BM25RecallCandidate,
     FeatureRelation,
     FeatureSet,
     LaneRuntimeState,
     LocalRecallCandidate,
     MockSample,
     RecallFusionMode,
+    RecallCandidate,
     Scenario,
 )
 from .execution import ExecutionResourcePool
@@ -133,6 +135,27 @@ def fuse_recall(
     mode: RecallFusionMode,
     k: int,
 ) -> tuple[list[LocalRecallCandidate], list[ContextRecallCandidate]]:
+    if mode is RecallFusionMode.UNION:
+        return list(local), list(context)
+    if mode is RecallFusionMode.SINGLE:
+        return local[:k], []
+    if mode is RecallFusionMode.RRF:
+        ranked = [
+            (1.0 / (60 + rank), "local", item) for rank, item in enumerate(local, start=1)
+        ] + [(1.0 / (60 + rank), "context", item) for rank, item in enumerate(context, start=1)]
+        selected = sorted(
+            ranked,
+            key=lambda value: (
+                -value[0],
+                value[2].scenario_id,
+                value[2].position,
+                getattr(value[2], "lane_id", ""),
+            ),
+        )[:k]
+        return (
+            [item for _, source, item in selected if source == "local"],
+            [item for _, source, item in selected if source == "context"],
+        )
     if mode is RecallFusionMode.SEMANTIC_ONLY:
         return local[:k], []
     if mode is RecallFusionMode.CONTEXT_ONLY:
@@ -160,6 +183,88 @@ def fuse_recall(
         [item for _, kind, item in selected if kind == "local"],
         [item for _, kind, item in selected if kind == "context"],
     )
+
+
+def fuse_recall_candidates(
+    semantic: list[LocalRecallCandidate],
+    context: list[ContextRecallCandidate],
+    bm25: list[BM25RecallCandidate],
+    mode: RecallFusionMode,
+    *,
+    k: int,
+    rrf_k: int = 60,
+    single_source: str = "semantic",
+    samples: Iterable[MockSample] = (),
+) -> list[RecallCandidate]:
+    """Fuse source results while preserving local and lane-path identity."""
+    sample_map = {(str(sample.sample_id), sample.position_id): sample for sample in samples}
+    merged: dict[tuple[str, int, str | None], RecallCandidate] = {}
+
+    def add(
+        scenario_id: str,
+        position: int,
+        lane_id: str | None,
+        source: str,
+        score: float,
+        rank: int,
+        sample: MockSample | None = None,
+    ) -> None:
+        sample = sample or sample_map.get((scenario_id, position))
+        key = (scenario_id, position, lane_id)
+        candidate = merged.get(key)
+        if candidate is None:
+            candidate = RecallCandidate(
+                scenario_id,
+                position,
+                lane_id,
+                sample.sample_hash if sample else None,
+                sample.mocked_query if sample else "",
+            )
+            merged[key] = candidate
+        candidate.source_scores[source] = score
+        candidate.source_ranks[source] = rank
+
+    for rank, item in enumerate(semantic, start=1):
+        add(item.scenario_id, item.position, None, "semantic", item.similarity, rank, item.sample)
+    for rank, item in enumerate(context, start=1):
+        add(item.scenario_id, item.position, item.lane_id, "context", item.similarity, rank)
+    for item in bm25:
+        add(item.scenario_id, item.position, None, "bm25", item.score, item.rank, item.sample)
+
+    values = list(merged.values())
+    if mode is RecallFusionMode.SINGLE:
+        if single_source not in {"semantic", "context", "bm25"}:
+            raise ValueError("single_recall_source must be semantic, context, or bm25")
+        values = [item for item in values if single_source in item.source_scores]
+    elif mode is RecallFusionMode.RRF:
+        if rrf_k < 0:
+            raise ValueError("rrf_k must not be negative")
+        for item in values:
+            item.fusion_score = sum(1.0 / (rrf_k + rank) for rank in item.source_ranks.values())
+        values.sort(
+            key=lambda item: (
+                -item.fusion_score,
+                item.scenario_id,
+                item.position,
+                item.lane_id or "",
+            )
+        )
+        return values[:k]
+    elif mode not in {RecallFusionMode.UNION}:
+        selected_semantic, selected_context = fuse_recall(semantic, context, mode, k)
+        allowed = {(item.scenario_id, item.position, None) for item in selected_semantic} | {
+            (item.scenario_id, item.position, item.lane_id) for item in selected_context
+        }
+        values = [item for item in values if item_key(item) in allowed]
+
+    return sorted(
+        values,
+        key=lambda item: (item.scenario_id, item.position, item.lane_id or ""),
+    )
+
+
+def item_key(item: RecallCandidate) -> tuple[str, int, str | None]:
+    return item.scenario_id, item.position, item.lane_id
 
 
 class EndpointEmbeddingIndex:

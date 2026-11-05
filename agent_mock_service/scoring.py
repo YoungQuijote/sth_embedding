@@ -16,6 +16,8 @@ from .domain import (
     JudgeCandidate,
     LaneRuntimeState,
     LocalRecallCandidate,
+    BM25RecallCandidate,
+    RecallCandidate,
     PositionPathEvidence,
     PositionScore,
     RequestAffinityInfo,
@@ -62,6 +64,7 @@ class BayesPositionScorer:
         availability_alpha: float,
         availability_gamma: float,
         availability_prior_weight: float = 0.1823215567939546,
+        llr_weights: dict[str, float] | None = None,
     ) -> None:
         self.profile = profile
         self.transition_table = transition_table
@@ -69,10 +72,18 @@ class BayesPositionScorer:
         self.availability_alpha = availability_alpha
         self.availability_gamma = availability_gamma
         self.availability_prior_weight = availability_prior_weight
+        self.llr_weights = {
+            "semantic": 1.0,
+            "context": 0.0,
+            "bm25": 0.0,
+            "feature": 0.0,
+            **(llr_weights or {}),
+        }
 
     def score(self, evidence: PositionPathEvidence) -> PositionScore:
         semantic_llr = calibrated_llr(self.profile, "semantic", evidence.scenario_semantic_raw)
         context_llr = calibrated_llr(self.profile, "context", evidence.context_raw)
+        bm25_llr = calibrated_llr(self.profile, "bm25", evidence.bm25_raw)
         feature_llr = calibrated_llr(self.profile, "feature", evidence.feature_raw)
         affinity_llr = calibrated_llr(self.profile, "affinity", evidence.affinity_raw)
         transition = transition_prior(
@@ -82,31 +93,37 @@ class BayesPositionScorer:
             evidence.availability, self.availability_alpha, self.availability_gamma
         )
         availability_value = self.availability_prior_weight * availability_raw_value
-        total = (
-            semantic_llr
-            + context_llr
-            + feature_llr
-            + affinity_llr
-            + transition
-            + availability_value
-        )
+        llrs = {
+            "semantic": semantic_llr,
+            "context": context_llr,
+            "bm25": bm25_llr,
+            "feature": feature_llr,
+        }
+        contributions = {
+            name: self.llr_weights.get(name, 0.0) * value for name, value in llrs.items()
+        }
+        total = sum(contributions.values()) + affinity_llr + transition + availability_value
         return PositionScore(
-            evidence.scenario_id,
-            evidence.position,
-            evidence.lane_id,
-            evidence.scenario_semantic_raw,
-            evidence.position_semantic_raw,
-            evidence.context_raw,
-            evidence.feature_raw,
-            evidence.affinity_raw,
-            semantic_llr,
-            context_llr,
-            feature_llr,
-            affinity_llr,
-            transition,
-            availability_raw_value,
-            availability_value,
-            total,
+            scenario_id=evidence.scenario_id,
+            position=evidence.position,
+            lane_id=evidence.lane_id,
+            scenario_semantic_raw=evidence.scenario_semantic_raw,
+            position_semantic_raw=evidence.position_semantic_raw,
+            context_raw=evidence.context_raw,
+            bm25_raw=evidence.bm25_raw,
+            feature_raw=evidence.feature_raw,
+            affinity_raw=evidence.affinity_raw,
+            semantic_llr=semantic_llr,
+            context_llr=context_llr,
+            bm25_llr=bm25_llr,
+            feature_llr=feature_llr,
+            affinity_llr=affinity_llr,
+            transition_prior=transition,
+            availability_raw=availability_raw_value,
+            availability_prior=availability_value,
+            evidence_weights=dict(self.llr_weights),
+            evidence_contributions=contributions,
+            total_log_score=total,
         )
 
 
@@ -133,6 +150,8 @@ class BayesEvidenceBuilder:
         context: list[ContextRecallCandidate],
         lanes: dict[str, LaneRuntimeState],
         feature_comparator: FeatureComparator,
+        bm25: list[BM25RecallCandidate] | None = None,
+        fused: list[RecallCandidate] | None = None,
     ) -> list[tuple[PositionPathEvidence, Any, str | None]]:
         local_map = {(item.scenario_id, item.position): item.similarity for item in local}
         scenario_semantic = {
@@ -148,6 +167,23 @@ class BayesEvidenceBuilder:
         }
         context_paths = {
             (item.scenario_id, item.position, item.lane_id): item.similarity for item in context
+        }
+        bm25_map = {(item.scenario_id, item.position): item.score for item in (bm25 or [])}
+        allowed_paths = (
+            {(item.scenario_id, item.position, item.lane_id) for item in fused}
+            if fused is not None
+            else None
+        )
+        scenario_bm25 = {
+            scenario.scenario_id: max(
+                (
+                    score
+                    for (scenario_id, _), score in bm25_map.items()
+                    if scenario_id == scenario.scenario_id
+                ),
+                default=None,
+            )
+            for scenario in scenarios
         }
         results = []
         for scenario in scenarios:
@@ -168,7 +204,17 @@ class BayesEvidenceBuilder:
                     continue
                 feature_raw = None if relation is FeatureRelation.UNKNOWN else feature_score
                 semantic = local_map.get((scenario.scenario_id, position.position))
-                if semantic is not None:
+                bm25_raw = bm25_map.get((scenario.scenario_id, position.position))
+                local_allowed = (
+                    allowed_paths is None
+                    or (
+                        scenario.scenario_id,
+                        position.position,
+                        None,
+                    )
+                    in allowed_paths
+                )
+                if local_allowed and (semantic is not None or bm25_raw is not None):
                     results.append(
                         (
                             PositionPathEvidence(
@@ -183,6 +229,7 @@ class BayesEvidenceBuilder:
                                 position.sample.round_id,
                                 position.sample.availability,
                                 None,
+                                scenario_bm25[scenario.scenario_id],
                             ),
                             position,
                             None,
@@ -196,6 +243,16 @@ class BayesEvidenceBuilder:
                     if (scenario_id, candidate_position) != (
                         scenario.scenario_id,
                         position.position,
+                    ):
+                        continue
+                    if (
+                        allowed_paths is not None
+                        and (
+                            scenario_id,
+                            candidate_position,
+                            lane_id,
+                        )
+                        not in allowed_paths
                     ):
                         continue
                     lane = lanes[lane_id]
@@ -220,6 +277,7 @@ class BayesEvidenceBuilder:
                                 position.sample.round_id,
                                 position.sample.availability,
                                 transition_distance,
+                                scenario_bm25[scenario.scenario_id],
                             ),
                             position,
                             runtime_context,

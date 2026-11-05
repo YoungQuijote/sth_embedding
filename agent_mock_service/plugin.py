@@ -11,6 +11,8 @@ from .contracts import (
     FeatureComparator,
     Judge,
     QueryParser,
+    Reranker,
+    Tokenizer,
 )
 
 
@@ -26,6 +28,8 @@ class BusinessPlugin:
     judge: Judge
     affinity_extractor: AffinityExtractor | None = None
     context_fingerprint: str | None = None
+    tokenizer: Tokenizer | None = None
+    reranker: Reranker | None = None
 
     def fusion_fingerprint(self) -> str:
         if self.context_fingerprint:
