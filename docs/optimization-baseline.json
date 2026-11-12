@@ -1,0 +1,41 @@
+{
+  "baseline_commit": "15dc1f72ec90302e14bb3d4d68a5a3c6e0b5021a",
+  "dataset": "100 scenarios, two rounds each; 100 endpoint documents; Top-N=2; no active lanes",
+  "model": "HashingEncoder(32), deterministic Joining fusion",
+  "baseline": [
+    {
+      "scenario": "cold",
+      "requests": 1,
+      "static_fuse": 200,
+      "document_encode": 300,
+      "p50_ms": 27.625,
+      "p95_ms": 27.625
+    },
+    {
+      "scenario": "hot",
+      "requests": 20,
+      "static_fuse": 0,
+      "document_encode": 0,
+      "p50_ms": 9.181,
+      "p95_ms": 12.593
+    }
+  ],
+  "current": [
+    {
+      "scenario": "cold",
+      "requests": 1,
+      "static_fuse": 2,
+      "document_encode": 102,
+      "p50_ms": 75.28,
+      "p95_ms": 75.28
+    },
+    {
+      "scenario": "hot",
+      "requests": 20,
+      "static_fuse": 0,
+      "document_encode": 0,
+      "p50_ms": 22.01,
+      "p95_ms": 27.183
+    }
+  ]
+}

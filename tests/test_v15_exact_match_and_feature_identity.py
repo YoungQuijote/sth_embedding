@@ -10,11 +10,13 @@ from agent_mock_service.domain import (
     MockSample,
     RequestAffinityInfo,
 )
-from agent_mock_service.runtime import AgentMockRuntime
 from agent_mock_service.repository import SQLiteRepository
+from agent_mock_service.runtime import AgentMockRuntime
 
 
 class CountingFeatureExtractor:
+    fingerprint = "counting-empty-v1"
+
     def __init__(self):
         self.calls = 0
 
@@ -96,7 +98,7 @@ def runtime(repository, extractor, encoder, judge, fusion=None, affinity=None):
 
 def test_exact_match_does_not_call_feature_extractor_encoder_or_judge(tmp_path):
     repository = SQLiteRepository(tmp_path / "exact.db")
-    repository.register(sample())
+    repository.register(sample(), extractor_fingerprint="counting-empty-v1")
     extractor = CountingFeatureExtractor()
     encoder = CountingEncoder()
     judge = CountingJudge()
@@ -117,8 +119,8 @@ def test_exact_match_does_not_call_feature_extractor_encoder_or_judge(tmp_path):
 
 def test_ambiguous_exact_query_still_calls_feature_extractor_and_judge(tmp_path):
     repository = SQLiteRepository(tmp_path / "ambiguous.db")
-    repository.register(sample(1))
-    repository.register(sample(2))
+    repository.register(sample(1), extractor_fingerprint="counting-empty-v1")
+    repository.register(sample(2), extractor_fingerprint="counting-empty-v1")
     extractor = CountingFeatureExtractor()
     encoder = CountingEncoder()
     judge = CountingJudge()
@@ -132,7 +134,7 @@ def test_ambiguous_exact_query_still_calls_feature_extractor_and_judge(tmp_path)
 
 def test_non_exact_query_calls_feature_extractor_once(tmp_path):
     repository = SQLiteRepository(tmp_path / "semantic.db")
-    repository.register(sample())
+    repository.register(sample(), extractor_fingerprint="counting-empty-v1")
     extractor = CountingFeatureExtractor()
     encoder = CountingEncoder()
     judge = CountingJudge()

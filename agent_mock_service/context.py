@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Sequence
 from concurrent.futures import Future
-from typing import Any, Sequence
-
-import hashlib
+from copy import deepcopy
+from typing import Any
 
 from .contracts import ContextFusionProvider, EmbeddingEncoder, FusionProviderResolver
 from .domain import ContextMessage, Scenario, ScenarioContext, ScenarioPosition
@@ -32,8 +32,7 @@ class ScenarioContextBuilder:
     def fingerprint(self) -> str:
         fusion_fingerprint = getattr(self.fusion, "fingerprint", None)
         if fusion_fingerprint is None:
-            identity = f"{type(self.fusion).__module__}.{type(self.fusion).__qualname__}"
-            fusion_fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+            raise ValueError("fusion requires a reliable fingerprint")
         return f"{self.encoder.fingerprint}:{fusion_fingerprint}"
 
     def build(self, scenario: Scenario[Any, Any]) -> Scenario[Any, Any]:
@@ -137,34 +136,21 @@ def serialize_context_messages(inputs: list[ContextMessage]) -> str:
     )
 
 
-class ScenarioContextCache:
-    """Thread-safe lazy cache for derived scenarios and their document embeddings."""
+class PositionContextCache:
+    """Bounded acceleration for validated SQLite rows; callers receive independent values."""
 
-    def __init__(self) -> None:
-        self._values: dict[tuple[str, str, str], dict[int, ScenarioContext]] = {}
+    def __init__(self, capacity: int = 256) -> None:
+        self.capacity = capacity
+        self._values: dict[tuple, ScenarioContext] = {}
         self._lock = threading.RLock()
 
-    def get(
-        self, scenario_id: str, encoder_fingerprint: str, data_fingerprint: str
-    ) -> dict[int, ScenarioContext] | None:
+    def get(self, key: tuple) -> ScenarioContext | None:
         with self._lock:
-            return self._values.get((scenario_id, encoder_fingerprint, data_fingerprint))
+            value = self._values.get(key)
+            return deepcopy(value) if value is not None else None
 
-    def put(
-        self,
-        scenario_id: str,
-        encoder_fingerprint: str,
-        data_fingerprint: str,
-        contexts: dict[int, ScenarioContext],
-    ) -> None:
+    def put(self, key: tuple, value: ScenarioContext) -> None:
         with self._lock:
-            self._values[(scenario_id, encoder_fingerprint, data_fingerprint)] = contexts
-
-    def clear(self) -> None:
-        with self._lock:
-            self._values.clear()
-
-    def invalidate(self, scenario_id: str) -> None:
-        with self._lock:
-            for key in [key for key in self._values if key[0] == scenario_id]:
-                del self._values[key]
+            if len(self._values) >= self.capacity:
+                self._values.pop(next(iter(self._values)))
+            self._values[key] = deepcopy(value)

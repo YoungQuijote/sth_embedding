@@ -1,29 +1,33 @@
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Iterable
 from concurrent.futures import Future
-from typing import Any, Iterable
+from dataclasses import replace
+from typing import Any
 
 from .contracts import ContextFusionProvider, EmbeddingEncoder, FeatureComparator
 from .defaults import cosine_similarity
 from .domain import (
-    ContextRecallCandidate,
     BM25RecallCandidate,
+    ContextRecallCandidate,
     FeatureRelation,
     FeatureSet,
     LaneRuntimeState,
     LocalRecallCandidate,
     MockSample,
-    RecallFusionMode,
     RecallCandidate,
+    RecallFusionMode,
     Scenario,
 )
 from .execution import ExecutionResourcePool
 
 
 class SemanticRecaller:
-    def __init__(self, encoder: EmbeddingEncoder) -> None:
+    def __init__(self, encoder: EmbeddingEncoder, store=None) -> None:
         self.encoder = encoder
+        self.store = store
         self.indexes: dict[str, EndpointEmbeddingIndex] = {}
 
     def recall(
@@ -33,12 +37,27 @@ class SemanticRecaller:
         samples: Iterable[MockSample],
         k: int,
         comparator: FeatureComparator,
+        timings=None,
+        metrics=None,
     ) -> list[LocalRecallCandidate]:
-        query_embedding = self.encoder.encode_query(query)
+        tick = time.perf_counter()
+        query_embedding = (
+            self.store.resources.call_component(self.encoder, self.encoder.encode_query, query)
+            if self.store and self.store.resources
+            else self.encoder.encode_query(query)
+        )
+        if timings is not None:
+            timings["semantic_query_encode_ms"] = (time.perf_counter() - tick) * 1000
+        tick = time.perf_counter()
         sample_list = list(samples)
         endpoint_id = sample_list[0].endpoint_id if sample_list else ""
-        index = self.indexes.setdefault(endpoint_id, EndpointEmbeddingIndex(self.encoder))
-        index.refresh_if_changed(sample_list)
+        index = self.indexes.setdefault(
+            endpoint_id, EndpointEmbeddingIndex(self.encoder, self.store)
+        )
+        index.refresh_if_changed(sample_list, metrics=metrics)
+        if timings is not None:
+            timings["semantic_index_load_ms"] = (time.perf_counter() - tick) * 1000
+        tick = time.perf_counter()
         candidates = []
         for sample, similarity in index.recall(query_embedding, len(sample_list)):
             relation, _ = comparator.compare(features, sample.features)
@@ -53,6 +72,8 @@ class SemanticRecaller:
                     sample,
                 )
             )
+        if timings is not None:
+            timings["semantic_recall_ms"] = (time.perf_counter() - tick) * 1000
         return sorted(candidates, key=lambda item: item.similarity, reverse=True)[:k]
 
 
@@ -115,9 +136,9 @@ class LaneContextRecaller:
                         position.sample.round_id, lane.active_rounds
                     ):
                         continue
-                    embedding = position.context.embedding or self.encoder.encode_document(
-                        position.context.fused_context
-                    )
+                    if position.context is None or position.context.embedding is None:
+                        continue
+                    embedding = position.context.embedding
                     candidates.append(
                         ContextRecallCandidate(
                             lane.lane_id,
@@ -219,6 +240,7 @@ def fuse_recall_candidates(
                 lane_id,
                 sample.sample_hash if sample else None,
                 sample.mocked_query if sample else "",
+                fact_revision=sample.fact_revision if sample else 0,
             )
             merged[key] = candidate
         candidate.source_scores[source] = score
@@ -270,42 +292,90 @@ def item_key(item: RecallCandidate) -> tuple[str, int, str | None]:
 class EndpointEmbeddingIndex:
     """In-memory endpoint corpus index, rebuilt only when sample hashes change."""
 
-    def __init__(self, encoder: EmbeddingEncoder) -> None:
+    def __init__(self, encoder: EmbeddingEncoder, store=None) -> None:
         self.encoder = encoder
-        self.endpoint_id: str | None = None
-        self.samples: list[MockSample] = []
-        self.embeddings: list[list[float]] = []
+        self.store = store
+        self.endpoint_id = None
+        self.samples = []
+        self.embeddings = []
         self.encoder_fingerprint = encoder.fingerprint
-        self._signature: tuple[str, ...] = ()
+        self._signature = ()
         self._lock = threading.RLock()
+        self._generation = 0
 
-    def build(self, samples: Iterable[MockSample]) -> None:
+    def build(self, samples, metrics=None):
         values = list(samples)
+        fp = self.encoder.fingerprint
         with self._lock:
-            self.endpoint_id = values[0].endpoint_id if values else None
-            self.samples = values
-            self.embeddings = self.encoder.encode_documents(
-                [sample.mocked_query for sample in values]
+            self._generation += 1
+            generation = self._generation
+            cached = (
+                dict(zip(self._signature, self.embeddings))
+                if fp == self.encoder_fingerprint
+                else {}
             )
-            self._signature = tuple(sample.sample_hash for sample in values)
+        if self.store:
+            vectors = self.store.document_vectors(values, self.encoder, metrics=metrics)
+        else:
+            missing = [s for s in values if s.sample_hash not in cached]
+            vectors = dict(cached)
+            if missing:
+                vectors.update(
+                    zip(
+                        [s.sample_hash for s in missing],
+                        self.encoder.encode_documents([s.mocked_query for s in missing]),
+                        strict=True,
+                    )
+                )
 
-    def refresh(self, samples: Iterable[MockSample]) -> None:
-        self.build(samples)
+        def publish():
+            with self._lock:
+                if generation != self._generation or fp != self.encoder.fingerprint:
+                    return
+                self.samples = [s for s in values if s.sample_hash in vectors]
+                self.embeddings = [vectors[s.sample_hash] for s in self.samples]
+                self._signature = tuple(s.sample_hash for s in self.samples)
+                self.encoder_fingerprint = fp
+                self.endpoint_id = self.samples[0].endpoint_id if self.samples else None
 
-    def refresh_if_changed(self, samples: Iterable[MockSample]) -> None:
-        values = list(samples)
-        signature = tuple(sample.sample_hash for sample in values)
-        if signature != self._signature:
-            self.build(values)
+        if self.store:
+            with self.store.repository._read():
+                # Membership is authoritative at publication, including removals during encoding.
+                values = [
+                    replace(current, features=s.features)
+                    for s in values
+                    if (current := self.store.repository.get_by_hash(s.sample_hash)) is not None
+                ]
+                publish()
+        else:
+            publish()
+
+    refresh = build
+    refresh_if_changed = build
 
     def recall(self, query_embedding: list[float], k: int) -> list[tuple[MockSample, float]]:
-        with self._lock:
-            values = [
-                (sample, cosine_similarity(query_embedding, embedding))
-                for sample, embedding in zip(self.samples, self.embeddings, strict=True)
+        def collect():
+            with self._lock:
+                pairs = list(zip(self.samples, self.embeddings, strict=True))
+            if self.store:
+                pairs = [
+                    (replace(current, features=s.features), vector)
+                    for s, vector in pairs
+                    if (current := self.store.repository.get_by_hash(s.sample_hash)) is not None
+                ]
+            return [
+                (sample, cosine_similarity(query_embedding, vector)) for sample, vector in pairs
             ]
+
+        if self.store:
+            with self.store.repository._read():
+                values = collect()
+        else:
+            values = collect()
         return sorted(values, key=lambda item: item[1], reverse=True)[:k]
 
 
 def _round_in(round_id: str | int, active_rounds: set[str | int]) -> bool:
-    return str(round_id) in {str(value) for value in active_rounds}
+    from .dag import normalize_round
+
+    return normalize_round(round_id) in {normalize_round(value) for value in active_rounds}

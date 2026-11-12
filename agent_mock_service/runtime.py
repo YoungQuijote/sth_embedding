@@ -6,13 +6,13 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
+from .bm25 import BM25Recaller, DefaultTokenizer
 from .calibration import (
     CalibrationBootstrapper,
     CalibrationConfig,
     CalibrationProfile,
     neutral_profile,
 )
-from .bm25 import BM25Recaller, DefaultTokenizer
 from .config import RuntimeConfig
 from .context import ScenarioContextBuilder
 from .contracts import (
@@ -24,9 +24,9 @@ from .contracts import (
     FeatureComparator,
     Judge,
     QueryParser,
-    TraceWriter,
-    Tokenizer,
     Reranker,
+    Tokenizer,
+    TraceWriter,
 )
 from .defaults import (
     DefaultAffinityExtractor,
@@ -42,6 +42,7 @@ from .domain import (
     MatchDecision,
     MockRequest,
     MockResponse,
+    PositionRef,
     RecallFusionMode,
     RuntimeInteraction,
 )
@@ -50,8 +51,8 @@ from .judge import FakeJudge
 from .lane import LaneManager
 from .plugin import BusinessPlugin, BusinessPluginRegistry
 from .recall import LaneContextRecaller, SemanticRecaller, fuse_recall_candidates
-from .reranker import BiEncoderReranker
 from .repository import SQLiteRepository
+from .reranker import BiEncoderReranker
 from .response import ResponseRendererRegistry
 from .scoring import BayesEvidenceBuilder, BayesPositionScorer, ScenarioScoreAggregator
 from .trace import MemoryTraceWriter
@@ -159,12 +160,17 @@ class AgentMockRuntime:
         self.lanes = lanes or LaneManager(self.config.lane_ttl_seconds)
         self.renderers = renderers or ResponseRendererRegistry()
         self.trace = trace or MemoryTraceWriter()
-        self.semantic_recaller = SemanticRecaller(self.encoder)
+        from .derived import DerivedStore
+
+        self.derived_store = DerivedStore(repository, self.execution_resources)
+        self.materializer = repository.materializer
+        repository.registration_callback = self._prepare_registered
+        self.semantic_recaller = SemanticRecaller(self.encoder, self.derived_store)
         self.bm25_recallers: dict[str, BM25Recaller] = {}
         self.context_recaller = LaneContextRecaller(self.encoder, self.execution_resources)
         if reranker is None and self.config.reranker_type != "bi_encoder":
             raise ValueError("non-default reranker_type requires an explicit Reranker instance")
-        self.default_reranker = reranker or BiEncoderReranker(self.encoder)
+        self.default_reranker = reranker or BiEncoderReranker(self.encoder, self.derived_store)
         self.evidence_builder = BayesEvidenceBuilder()
         self.scorer = BayesPositionScorer(
             self.calibration,
@@ -187,7 +193,29 @@ class AgentMockRuntime:
             "upstream_request_id": request.upstream_request_id,
             "calibration_version": self.calibration.version,
             "calibration_evidences": sorted(self.calibration.distributions),
-            "timing": {},
+            "computation": {
+                "sample_document_encode": 0,
+                "static_context_encode": 0,
+                "static_fuse": 0,
+                "dynamic_lane_fuse": 0,
+            },
+            "timing": {
+                name: 0.0
+                for name in (
+                    "facts_read_ms",
+                    "semantic_index_load_ms",
+                    "semantic_query_encode_ms",
+                    "semantic_recall_ms",
+                    "bm25_index_load_ms",
+                    "bm25_recall_ms",
+                    "context_artifact_load_ms",
+                    "lane_fusion_ms",
+                    "lane_static_materialization_ms",
+                    "final_materialization_ms",
+                    "rerank_ms",
+                    "judge_ms",
+                )
+            },
         }
         try:
             try:
@@ -199,7 +227,9 @@ class AgentMockRuntime:
             stage = time.perf_counter()
             query = plugin.parser.parse(request.body).strip()
             trace_event["query_content"] = query
+            facts_started = time.perf_counter()
             samples = self.repository.list_endpoint(request.endpoint_id)
+            trace_event["timing"]["facts_read_ms"] = (time.perf_counter() - facts_started) * 1000
             direct = [sample for sample in samples if sample.mocked_query.strip() == query]
             if len(direct) == 1:
                 trace_event["timing"]["parse_ms"] = (time.perf_counter() - stage) * 1000
@@ -216,11 +246,17 @@ class AgentMockRuntime:
                     "DIRECT_MATCH",
                     lane_id,
                 )
+            from .materialization import component_fingerprint
+
+            feature_fingerprint = component_fingerprint(plugin.feature_extractor)
+            samples = self.derived_store.feature_views(samples, plugin.feature_extractor)
             affinity_extractor = plugin.affinity_extractor or self.default_affinity_extractor
             affinity = affinity_extractor.extract(request.headers)
             features = self.execution_resources.call_component(
                 plugin.feature_extractor, plugin.feature_extractor.extract, query
             )
+            if component_fingerprint(plugin.feature_extractor) != feature_fingerprint:
+                raise ValueError("FeatureExtractor changed while preparing the query view")
             trace_event["request_affinity"] = asdict(affinity)
             trace_event["timing"]["parse_feature_ms"] = (time.perf_counter() - stage) * 1000
             stage = time.perf_counter()
@@ -253,6 +289,8 @@ class AgentMockRuntime:
                     samples,
                     self.config.semantic_recall_k,
                     plugin.feature_comparator,
+                    timings=trace_event["timing"],
+                    metrics=trace_event["computation"],
                 )
                 if use_semantic
                 else []
@@ -267,7 +305,11 @@ class AgentMockRuntime:
                 BM25Recaller(endpoint_tokenizer, self.config.bm25_k1, self.config.bm25_b),
             )
             bm25 = (
-                bm25_recaller.recall(query, samples, self.config.bm25_recall_k) if use_bm25 else []
+                bm25_recaller.recall(
+                    query, samples, self.config.bm25_recall_k, timings=trace_event["timing"]
+                )
+                if use_bm25
+                else []
             )
             scenario_ids = {candidate.scenario_id for candidate in local} | {
                 candidate.scenario_id for candidate in bm25
@@ -277,10 +319,32 @@ class AgentMockRuntime:
                 scenario_ids.update(
                     scenario_id for lane in active_lanes for scenario_id in lane.scenario_hypotheses
                 )
+            facts_started = time.perf_counter()
             scenarios = {
                 scenario.scenario_id: scenario
-                for scenario in self.repository.get_many(scenario_ids)
+                for scenario in self.repository.get_facts_many(scenario_ids)
             }
+            trace_event["timing"]["facts_read_ms"] += (time.perf_counter() - facts_started) * 1000
+            if use_context:
+                self.lanes.reevaluate(scenarios)
+                active_lanes = self.lanes.active()
+            lane_refs = (
+                {
+                    PositionRef(p.scenario_id, p.position)
+                    for lane in active_lanes
+                    for sid in lane.scenario_hypotheses
+                    for p in (scenarios[sid].positions if sid in scenarios else [])
+                    if p.sample.endpoint_id == request.endpoint_id
+                    and int(p.sample.round_id) in {int(r) for r in lane.active_rounds}
+                }
+                if use_context
+                else set()
+            )
+            self._materialize(scenarios, lane_refs, "lane_recall", trace_event)
+            trace_event["computation"]["dynamic_lane_fuse"] = (
+                len(active_lanes) if use_context else 0
+            )
+            lane_started = time.perf_counter()
             context = (
                 self.context_recaller.recall(
                     query,
@@ -293,6 +357,7 @@ class AgentMockRuntime:
                 if use_context
                 else []
             )
+            trace_event["timing"]["lane_fusion_ms"] = (time.perf_counter() - lane_started) * 1000
             fused = fuse_recall_candidates(
                 local,
                 context,
@@ -330,14 +395,33 @@ class AgentMockRuntime:
                 query,
                 eligible,
                 top_n=self.config.reranker_top_n,
+                **(
+                    {"metrics": trace_event["computation"]}
+                    if type(reranker) is BiEncoderReranker
+                    else {}
+                ),
             )
             trace_event["timing"]["rerank_ms"] = (time.perf_counter() - rerank_started) * 1000
             trace_event["timing"]["recall_ms"] = (time.perf_counter() - stage) * 1000
             scenario_ids = {candidate.scenario_id for candidate in fused}
+            facts_started = time.perf_counter()
             scenarios = {
                 scenario.scenario_id: scenario
-                for scenario in self.repository.get_many(scenario_ids)
+                for scenario in self.repository.get_facts_many(scenario_ids)
             }
+            trace_event["timing"]["facts_read_ms"] += (time.perf_counter() - facts_started) * 1000
+            final_refs = {PositionRef(c.scenario_id, c.position) for c in fused}
+            self._materialize(scenarios, final_refs, "final_candidates", trace_event)
+            # Fresh feature view is independent of static Context and fact identity.
+            for scenario in scenarios.values():
+                for position in scenario.positions:
+                    current = samples_by_position.get((position.scenario_id, position.position))
+                    if current and current.sample_hash == position.sample.sample_hash:
+                        position.features = current.features
+            selected_revisions = {
+                (c.scenario_id, c.position, c.lane_id): c.fact_revision for c in fused
+            }
+            selected_hashes = {(c.scenario_id, c.position, c.lane_id): c.sample_hash for c in fused}
             lanes_by_id = {lane.lane_id: lane for lane in active_lanes}
             candidates: list[JudgeCandidate] = []
             for evidence, position, runtime_context in self.evidence_builder.build(
@@ -360,7 +444,7 @@ class AgentMockRuntime:
                         request.endpoint_id,
                         position.sample.mocked_query,
                         self.scorer.score(evidence),
-                        position.context.fused_context,
+                        position.context.fused_context if position.context else None,
                         runtime_context,
                     )
                 )
@@ -387,9 +471,11 @@ class AgentMockRuntime:
                 "output_count": len(fused),
             }
             trace_event["bayes_scores"] = [asdict(item.score) for item in candidates]
+            judge_started = time.perf_counter()
             result = self.execution_resources.call_component(
                 plugin.judge, plugin.judge.judge, query, scenario_candidates
             )
+            trace_event["timing"]["judge_ms"] = (time.perf_counter() - judge_started) * 1000
             trace_event["judge"] = {
                 "model": plugin.judge.model_name,
                 "prompt_version": plugin.judge.prompt_version,
@@ -424,6 +510,14 @@ class AgentMockRuntime:
                 return self._failure(
                     request_id, result.decision, trace_event, started, result.short_reason
                 )
+            selected_path = (result.scenario_id, result.position, result.lane_id)
+            allowed = {
+                (p.scenario_id, p.position, p.lane_id)
+                for group in scenario_candidates
+                for p in group.positions
+            }
+            if selected_path not in allowed:
+                raise ValueError("judge selected a path outside candidates")
             scenario = scenarios.get(result.scenario_id)
             selected = (
                 next(
@@ -438,7 +532,11 @@ class AgentMockRuntime:
                 if scenario
                 else None
             )
-            if selected is None:
+            if (
+                selected is None
+                or selected.sample_hash != selected_hashes.get(selected_path)
+                or selected.fact_revision != selected_revisions.get(selected_path)
+            ):
                 raise ValueError("judge selected an invalid endpoint position")
             return self._complete_match(
                 request,
@@ -450,7 +548,7 @@ class AgentMockRuntime:
                 "JUDGE_MATCH",
                 result.lane_id,
             )
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - report business failures at the service boundary
             trace_event["error"] = {
                 "error_stage": "runtime",
                 "error_type": type(error).__name__,
@@ -465,6 +563,68 @@ class AgentMockRuntime:
                 {"content-type": "application/json"},
             )
 
+    def _prepare_registered(self, refs):
+        self.repository.last_derived_errors = {}
+        by_endpoint = {}
+        snapshot = self.repository.snapshot()
+        for ref in refs:
+            fact = snapshot.facts.get(ref)
+            if fact:
+                sample = self.repository.get_by_hash(fact.sample_hash)
+                if sample:
+                    by_endpoint.setdefault(fact.endpoint_id, []).append(sample)
+        for endpoint, samples in by_endpoint.items():
+            try:
+                plugin = self.business_plugins.get(endpoint)
+                self.derived_store.feature_views(samples, plugin.feature_extractor)
+                self.derived_store.document_vectors(samples, self.encoder)
+            except Exception as error:  # noqa: BLE001 - report business failures at the service boundary
+                self.repository.last_derived_errors[endpoint] = str(error)
+                logging.getLogger(__name__).warning(
+                    "Committed registration; derived data unavailable for %s: %s", endpoint, error
+                )
+
+    def register(self, sample, affinity=None, **kwargs):
+        """Versioned registration using the runtime-owned plugin, encoder and resource pool."""
+        from dataclasses import replace
+
+        from .materialization import component_fingerprint
+
+        plugin = self.business_plugins.get(sample.endpoint_id)
+        fp = component_fingerprint(plugin.feature_extractor)
+        features = self.execution_resources.call_component(
+            plugin.feature_extractor, plugin.feature_extractor.extract, sample.mocked_query
+        )
+        return self.repository.register(
+            replace(sample, features=features), affinity, extractor_fingerprint=fp, **kwargs
+        )
+
+    def _materialize(self, scenarios, refs, reason, event):
+        if not refs:
+            return
+        tick = time.perf_counter()
+        batch = self.materializer.ensure_position_contexts(refs, reason=reason)
+        event["timing"]["context_artifact_load_ms"] += batch.artifact_load_ms
+        event["computation"]["static_fuse"] += sum(r.fuse_count for r in batch.results.values())
+        event["computation"]["static_context_encode"] += sum(
+            r.embedding_count for r in batch.results.values()
+        )
+        event.setdefault("materialization", {})[reason] = [
+            {key: value for key, value in asdict(result).items() if key != "artifact"}
+            for result in batch.results.values()
+        ]
+        for scenario in scenarios.values():
+            for position in scenario.positions:
+                result = batch.results.get(PositionRef(position.scenario_id, position.position))
+                if result:
+                    position.context = result.artifact
+        name = (
+            "lane_static_materialization_ms"
+            if reason == "lane_recall"
+            else "final_materialization_ms"
+        )
+        event["timing"][name] = (time.perf_counter() - tick) * 1000
+
     def _complete_match(
         self,
         request: MockRequest,
@@ -477,10 +637,7 @@ class AgentMockRuntime:
         lane_id: str | None,
     ) -> MockResponse:
         # Fetch after selection so judge candidates can never contain candidate answers.
-        stored = self.repository.get_by_hash(sample.sample_hash)
-        if stored is None:
-            raise KeyError(sample.sample_hash)
-        self.repository.increment_invoked(stored.sample_hash)
+        stored = self.repository.claim_selected_sample(sample.sample_hash, sample.fact_revision)
         scenario = self.repository.get_facts(str(stored.sample_id))
         lane_before = self.lanes.get(lane_id) if lane_id else None
         before_version = lane_before.state_version if lane_before else None

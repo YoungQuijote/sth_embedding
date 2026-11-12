@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import inspect
 import asyncio
+import inspect
 from dataclasses import replace
 
 import pytest
@@ -19,8 +19,8 @@ from agent_mock_service.defaults import (
     create_default_encoder,
 )
 from agent_mock_service.domain import (
-    FeatureSet,
     CalibrationSample,
+    FeatureSet,
     JudgeCandidate,
     JudgeResult,
     MatchDecision,
@@ -77,6 +77,7 @@ def test_context_contains_previous_queries_and_answers(repository):
     repository.register(make_sample("s", 1, 1, "Q1a", "A1a"))
     repository.register(make_sample("s", 1, 2, "Q1b", "A1b"))
     repository.register(make_sample("s", 2, 3, "Q2", "A2"))
+    repository.finalize_round("s", 1)
     scenario = repository.get("s")
     context = next(item.context.fused_context for item in scenario.positions if item.position == 3)
     assert all(
@@ -258,6 +259,8 @@ def test_sentence_transformer_fallbacks(tmp_path, caplog):
 def test_endpoint_embedding_index_does_not_reencode_documents(repository):
     repository.register(make_sample("a", 1, 1, "alpha", "A"))
     repository.register(make_sample("b", 1, 2, "beta", "B"))
+    repository.finalize_round("a", 1)
+    repository.finalize_round("b", 1)
     encoder = CountingEncoder()
     runtime = AgentMockRuntime(
         repository, encoder=encoder, calibration=CalibrationProfile("n", "", encoder.fingerprint)
@@ -278,6 +281,7 @@ def test_scenario_context_cache_and_invalidation(tmp_path):
     first_count = encoder.document_calls
     repository.get("s")
     assert encoder.document_calls == first_count
+    repository.finalize_round("s", 1)
     repository.register(make_sample("s", 2, 2, "q2", "a2"))
     repository.get("s")
     assert encoder.document_calls > first_count

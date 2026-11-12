@@ -80,6 +80,8 @@ def test_lane_advances_after_all_positions_in_round_match(repository):
     repo.register(sample("s", 10, 2, "q10b"))
     repo.register(sample("s", 20, 3, "q20"))
     repo.register(sample("s", 30, 4, "q30"))
+    for round_id in {s.round_id for s in repo.list_all()}:
+        repo.finalize_round("s", round_id)
     scenario = repo.get("s")
     lanes = LaneManager()
     lane = lanes.update(scenario, RuntimeInteraction("r1", "/agent", "s", 1, 10, "q", "a"))
@@ -94,6 +96,8 @@ def test_lane_supports_non_contiguous_round_ids(repository):
     repo, _ = repository
     for round_id, position in ((10, 1), (20, 2), (40, 3)):
         repo.register(sample("s", round_id, position, f"q{round_id}"))
+    for round_id in {s.round_id for s in repo.list_all()}:
+        repo.finalize_round("s", round_id)
     scenario = repo.get("s")
     lanes = LaneManager()
     lane = lanes.update(scenario, RuntimeInteraction("r1", "/agent", "s", 1, 10, "q", "a"))
@@ -240,6 +244,8 @@ def test_raw_context_is_not_business_fused(repository):
     repo, _ = repository
 
     class Fusion:
+        fingerprint = "business-test-v1"
+
         def fuse(self, inputs):
             return "BUSINESS-FUSED"
 
@@ -248,7 +254,7 @@ def test_raw_context_is_not_business_fused(repository):
     repo.register(sample("s", 1, 1, "raw question"))
     context = repo.get("s").positions[0].context
     assert context.raw_context == "Question:\nraw question"
-    assert context.fused_context == "BUSINESS-FUSED"
+    assert context.fused_context == "raw question"  # no-history bypasses Fusion
 
 
 def test_fastapi_adapter_offloads_sync_runtime():

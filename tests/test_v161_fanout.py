@@ -11,6 +11,7 @@ from agent_mock_service.domain import (
     FeatureSet,
     LaneRuntimeState,
     MockSample,
+    PositionRef,
     RuntimeInteraction,
     Scenario,
     ScenarioContext,
@@ -23,6 +24,7 @@ from agent_mock_service.repository import SQLiteRepository
 
 
 class TrackingFusion:
+    fingerprint = "tracking-fusion-v1"
     execution_resource_id = "fuse"
 
     def __init__(self, delay: float = 0.03) -> None:
@@ -33,7 +35,7 @@ class TrackingFusion:
         self.lock = threading.Lock()
 
     def fuse(self, messages: list[object]) -> str:
-        contents = [getattr(message, "content") for message in messages]
+        contents = [message.content for message in messages]
         with self.lock:
             self.active += 1
             self.maximum = max(self.maximum, self.active)
@@ -59,6 +61,7 @@ def _register_scenario(
                 scenario_id,
                 10,
                 position,
+                context_source_positions=[PositionRef("history", 0)],
             )
         )
 
@@ -68,8 +71,27 @@ def _repository(tmp_path, capacity: int = 4):
     pool.register("fuse", capacity)
     fusion = TrackingFusion(0.01)
     repository = SQLiteRepository(tmp_path / "fanout.sqlite")
-    repository.bind_context_builder(ScenarioContextBuilder(fusion, HashingEncoder(), pool))
+    repository.register(
+        MockSample(
+            "/history", "history-Q", "history-A", "history", 1, 0, context_source_positions=[]
+        )
+    )
+    repository.test_builder = ScenarioContextBuilder(fusion, HashingEncoder(), pool)
     return repository, pool, fusion
+
+
+def _ensure(repository, ids):
+    if not repository.materializer:
+        repository.bind_context_builder(repository.test_builder)
+    scenarios = repository.get_facts_many(ids)
+    refs = [PositionRef(p.scenario_id, p.position) for s in scenarios for p in s.positions]
+    batch = repository.materializer.ensure_position_contexts(refs, reason="test")
+    for scenario in scenarios:
+        for position in scenario.positions:
+            position.context = batch.results[
+                PositionRef(position.scenario_id, position.position)
+            ].artifact
+    return scenarios
 
 
 def test_cross_scenario_fuse_uses_full_resource_capacity(tmp_path) -> None:
@@ -78,7 +100,7 @@ def test_cross_scenario_fuse_uses_full_resource_capacity(tmp_path) -> None:
         ids = [f"s{index}" for index in range(4)]
         for scenario_id in ids:
             _register_scenario(repository, scenario_id)
-        assert [item.scenario_id for item in repository.get_many(ids)] == ids
+        assert [item.scenario_id for item in _ensure(repository, ids)] == ids
         assert fusion.maximum == 4
     finally:
         repository.close()
@@ -91,7 +113,7 @@ def test_cross_scenario_fanout_respects_resource_bound(tmp_path) -> None:
         ids = [f"s{index}" for index in range(10)]
         for scenario_id in ids:
             _register_scenario(repository, scenario_id)
-        repository.get_many(ids)
+        _ensure(repository, ids)
         assert 1 < fusion.maximum <= 3
     finally:
         repository.close()
@@ -104,7 +126,7 @@ def test_multi_position_multi_scenario_scheduling_is_deterministic(tmp_path) -> 
         expected = {"s1": 3, "s2": 1, "s3": 4}
         for scenario_id, count in expected.items():
             _register_scenario(repository, scenario_id, count)
-        scenarios = repository.get_many(expected)
+        scenarios = _ensure(repository, expected)
         assert [item.scenario_id for item in scenarios] == list(expected)
         assert [len(item.positions) for item in scenarios] == list(expected.values())
         assert len(fusion.calls) == sum(expected.values())
@@ -114,7 +136,10 @@ def test_multi_position_multi_scenario_scheduling_is_deterministic(tmp_path) -> 
                 range(expected[scenario.scenario_id])
             )
             for position in scenario.positions:
-                assert position.context.fused_context == position.sample.mocked_query
+                assert (
+                    position.context.fused_context
+                    == "history-Q|history-A|" + position.sample.mocked_query
+                )
                 assert position.sample.mocked_answer not in position.context.raw_context
     finally:
         repository.close()
@@ -126,13 +151,13 @@ def test_get_many_cache_hits_do_not_refuse_and_mixed_order_is_stable(tmp_path) -
     try:
         for scenario_id in ("s1", "s2", "s3", "s4"):
             _register_scenario(repository, scenario_id)
-        repository.get_many(["s1", "s3"])
+        _ensure(repository, ["s1", "s3"])
         assert len(fusion.calls) == 2
 
-        scenarios = repository.get_many(["s1", "s2", "s3", "s4"])
+        scenarios = _ensure(repository, ["s1", "s2", "s3", "s4"])
         assert [item.scenario_id for item in scenarios] == ["s1", "s2", "s3", "s4"]
         assert len(fusion.calls) == 4
-        repository.get_many(["s1", "s2", "s3", "s4"])
+        _ensure(repository, ["s1", "s2", "s3", "s4"])
         assert len(fusion.calls) == 4
     finally:
         repository.close()

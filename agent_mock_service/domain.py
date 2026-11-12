@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Generic, Literal, Mapping, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 HardFeaturesT = TypeVar("HardFeaturesT")
 SoftFeaturesT = TypeVar("SoftFeaturesT")
@@ -68,6 +69,8 @@ class MockSample:
     features: FeatureSet[Any, Any] = field(default_factory=lambda: FeatureSet({}, {}))
     sample_hash: str = ""
     availability: InvokeAvailability = field(default_factory=InvokeAvailability)
+    context_source_positions: list[PositionRef] | None = None
+    fact_revision: int = 0
 
 
 @dataclass(slots=True)
@@ -92,6 +95,7 @@ class CalibrationSample:
     round_id: str | int
     position_id: int
     features: FeatureSet[Any, Any] = field(default_factory=lambda: FeatureSet({}, {}))
+    feature_fingerprint: str | None = None
 
 
 @dataclass(slots=True)
@@ -109,7 +113,7 @@ class ScenarioPosition(Generic[HardFeaturesT, SoftFeaturesT]):
     scenario_id: str
     position: int
     sample: MockSample
-    context: ScenarioContext
+    context: ScenarioContext | None
     features: FeatureSet[HardFeaturesT, SoftFeaturesT]
 
 
@@ -118,6 +122,8 @@ class Scenario(Generic[HardFeaturesT, SoftFeaturesT]):
     scenario_id: str
     positions: list[ScenarioPosition[HardFeaturesT, SoftFeaturesT]]
     registry_affinity_infos: list[RequestAffinityInfo] = field(default_factory=list)
+
+    round_states: list[ScenarioRound] = field(default_factory=list)
 
     @property
     def rounds(self) -> list[str | int]:
@@ -228,6 +234,7 @@ class RecallCandidate:
     source_ranks: dict[str, int] = field(default_factory=dict)
     fusion_score: float = 0.0
     rerank_score: float | None = None
+    fact_revision: int = 0
 
 
 @dataclass(slots=True)
@@ -279,7 +286,7 @@ class JudgeCandidate:
     endpoint_id: str
     mocked_query: str
     score: PositionScore
-    scenario_context: str
+    scenario_context: str | None
     runtime_context: str | None
 
 
@@ -320,3 +327,62 @@ class MockResponse:
     headers: dict[str, str]
     scenario_id: str | None = None
     position: int | None = None
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class PositionRef:
+    scenario_id: str
+    position_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioRound:
+    scenario_id: str
+    round_id: str
+    round_position_completeness: str = "OPEN"
+    expected_position_count: int | None = None
+    revision: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyResolution:
+    target: PositionRef
+    ancestors: tuple[PositionRef, ...]
+    missing_refs: tuple[PositionRef, ...]
+    incomplete_rounds: tuple[tuple[str, str], ...]
+    position_context_completeness: bool
+    declaration_version: str
+    required_rounds: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PositionContextState:
+    target: PositionRef
+    position_context_completeness: bool
+    materialization_status: str
+    lineage_fingerprint: str
+    last_error: str | None = None
+
+
+@dataclass(slots=True)
+class ContextReadResult:
+    target: PositionRef
+    completeness: bool
+    status: str
+    artifact: ScenarioContext | None = None
+    error: str | None = None
+    stale_discard: bool = False
+    cache_hit: str | None = None
+    lineage_fingerprint: str = ""
+    fusion_fingerprint: str = ""
+    encoder_fingerprint: str = ""
+    missing_refs: tuple[PositionRef, ...] = ()
+    incomplete_rounds: tuple[tuple[str, str], ...] = ()
+    fuse_count: int = 0
+    embedding_count: int = 0
+
+
+@dataclass(slots=True)
+class MaterializationBatchResult:
+    results: dict[PositionRef, ContextReadResult] = field(default_factory=dict)
+    artifact_load_ms: float = 0.0

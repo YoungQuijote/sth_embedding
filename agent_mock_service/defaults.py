@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-import math
 import logging
+import math
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from .domain import ContextMessage, FeatureRelation, FeatureSet, RequestAffinityInfo
 
@@ -37,7 +37,11 @@ class HashingEncoder:
     fingerprint = "sha256-token-256-v1"
 
     def __init__(self, dimensions: int = 256) -> None:
+        if dimensions <= 0:
+            raise ValueError("dimensions must be positive")
         self.dimensions = dimensions
+        if type(self).fingerprint == HashingEncoder.fingerprint:
+            self.fingerprint = f"sha256-token-{dimensions}-v1"
 
     def encode(self, text: str) -> list[float]:
         vector = [0.0] * self.dimensions
@@ -122,11 +126,14 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
 
 
 class EmptyFeatureExtractor:
+    fingerprint = "empty-feature-v1"
+
     def extract(self, query: str) -> FeatureSet[dict[str, Any], dict[str, Any]]:
         return FeatureSet({}, {})
 
 
 class DefaultFeatureComparator:
+    fingerprint = "shared-hard-keys-v1"
     """Only conflicting values of explicit, shared hard keys eliminate a candidate."""
 
     def compare(
@@ -145,6 +152,8 @@ class DefaultFeatureComparator:
 
 
 class JoiningContextFusionProvider:
+    fingerprint = "joining-role-messages-v1"
+
     def fuse(self, inputs: Sequence[ContextMessage]) -> str:
         return "\n\n".join(
             f"{'Question' if message.role == 'question' else 'Answer'}:\n{message.content.strip()}"

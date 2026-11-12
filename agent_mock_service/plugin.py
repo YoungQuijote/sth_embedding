@@ -37,8 +37,7 @@ class BusinessPlugin:
         explicit = getattr(self.fusion, "fingerprint", None)
         if explicit:
             return str(explicit)
-        identity = f"{type(self.fusion).__module__}.{type(self.fusion).__qualname__}"
-        return hashlib.sha256(identity.encode()).hexdigest()
+        raise ValueError("fusion requires a reliable fingerprint or context_fingerprint")
 
 
 class BusinessPluginRegistry:

@@ -7,17 +7,17 @@ import pytest
 from agent_mock_service.calibration import CalibratedDistribution, CalibrationProfile
 from agent_mock_service.defaults import HashingEncoder
 from agent_mock_service.domain import (
+    ContextRecallCandidate,
     FeatureRelation,
     FeatureSet,
-    ContextRecallCandidate,
     InvokeAvailability,
     JudgeResult,
+    LaneRuntimeState,
     MatchDecision,
     MockRequest,
     MockSample,
     PositionPathEvidence,
     RequestAffinityInfo,
-    LaneRuntimeState,
     ScenarioHypothesisState,
 )
 from agent_mock_service.plugin import BusinessPlugin, BusinessPluginRegistry
@@ -148,7 +148,7 @@ def test_evidence_builder_computes_ordinal_transition_and_missing_values(tmp_pat
     assert evidence.transition_distance == 1
     assert evidence.scenario_semantic_raw is None
     assert evidence.position_semantic_raw is None
-    assert evidence.context_raw == 0.7
+    assert evidence.context_raw is None  # pure facts have no valid materialized context
     assert evidence.feature_raw is None
     assert evidence.affinity_raw is None
     assert transition_prior(evidence.transition_distance, {1: 0.9}, 0.1) == 0.9
@@ -166,6 +166,8 @@ class RecordingParser:
 
 
 class RecordingExtractor:
+    fingerprint = "recording-empty-v1"
+
     def __init__(self):
         self.calls = 0
 
@@ -236,8 +238,16 @@ def make_plugin(endpoint):
 
 def test_runtime_routes_business_components_by_endpoint_and_shares_resources(tmp_path):
     repository = SQLiteRepository(tmp_path / "plugins.db")
-    repository.register(sample("/weather", "s", 1, 1, "weather preset", "sunny"))
-    repository.register(sample("/traffic", "s", 2, 2, "traffic preset", "clear"))
+    repository.register(
+        sample("/weather", "s", 1, 1, "weather preset", "sunny"),
+        extractor_fingerprint="recording-empty-v1",
+    )
+    repository.finalize_round("s", 1)
+    repository.register(
+        sample("/traffic", "s", 2, 2, "traffic preset", "clear"),
+        extractor_fingerprint="recording-empty-v1",
+    )
+    repository.finalize_round("s", 2)
     weather = make_plugin("/weather")
     traffic = make_plugin("/traffic")
     registry = BusinessPluginRegistry(allow_default_plugin=False)
@@ -261,7 +271,7 @@ def test_runtime_routes_business_components_by_endpoint_and_shares_resources(tmp
     contexts = {
         position.position: position.context.fused_context for position in scenario.positions
     }
-    assert contexts[1].startswith("/weather:")
+    assert contexts[1] == "weather preset"  # no-history fast path
     assert contexts[2].startswith("/traffic:")
     assert "sunny" in contexts[2]
 

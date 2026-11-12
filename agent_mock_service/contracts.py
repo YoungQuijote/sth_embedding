@@ -1,27 +1,31 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any, Iterable, Mapping, Protocol, TypeVar
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, Protocol, TypeVar
 
 from .domain import (
-    FeatureRelation,
-    FeatureSet,
-    ContextMessage,
     CalibrationProbe,
     CalibrationSample,
+    ContextMessage,
+    ContextReadResult,
+    FeatureRelation,
+    FeatureSet,
     JudgeResult,
+    MaterializationBatchResult,
     MockSample,
+    PositionRef,
+    RecallCandidate,
     RequestAffinityInfo,
     Scenario,
     ScenarioJudgeCandidate,
-    RecallCandidate,
+    ScenarioRound,
 )
 
-QueryInputT = TypeVar("QueryInputT", contravariant=True)
+QueryInputT_contra = TypeVar("QueryInputT_contra", contravariant=True)
 
 
-class QueryParser(Protocol[QueryInputT]):
-    def parse(self, body: QueryInputT) -> str: ...
+class QueryParser(Protocol[QueryInputT_contra]):
+    def parse(self, body: QueryInputT_contra) -> str: ...
 
 
 class EmbeddingEncoder(Protocol):
@@ -35,6 +39,8 @@ class EmbeddingEncoder(Protocol):
 
 
 class BusinessFeatureExtractor(Protocol):
+    fingerprint: str
+
     def extract(self, query: str) -> FeatureSet[Any, Any]: ...
 
 
@@ -45,6 +51,8 @@ class FeatureComparator(Protocol):
 
 
 class ContextFusionProvider(Protocol):
+    fingerprint: str
+
     def fuse(self, inputs: Sequence[ContextMessage]) -> str: ...
 
 
@@ -81,7 +89,13 @@ class Judge(Protocol):
 
 class SampleRepository(Protocol):
     def register(
-        self, sample: MockSample, affinity: RequestAffinityInfo | None = None
+        self,
+        sample: MockSample,
+        affinity: RequestAffinityInfo | None = None,
+        *,
+        round_position_completeness: bool = False,
+        force_registry: bool = False,
+        extractor_fingerprint: str | None = None,
     ) -> MockSample: ...
     def list_endpoint(self, endpoint_id: str) -> list[MockSample]: ...
     def increment_invoked(self, sample_hash: str) -> None: ...
@@ -91,6 +105,17 @@ class SampleRepository(Protocol):
 
 
 class ScenarioRepository(Protocol):
+    def get_facts_many(self, scenario_ids: Iterable[str]) -> list[Scenario[Any, Any]]: ...
+    def get_position_contexts(
+        self, refs: Iterable[PositionRef]
+    ) -> dict[PositionRef, ContextReadResult]: ...
+    def rebuild_position_contexts(
+        self, refs: Iterable[PositionRef]
+    ) -> MaterializationBatchResult: ...
+    def finalize_round(
+        self, scenario_id: str, round_id: str | int, *, expected_position_count: int | None = None
+    ) -> ScenarioRound: ...
+
     def get_facts(self, scenario_id: str) -> Scenario[Any, Any] | None: ...
     def get(self, scenario_id: str) -> Scenario[Any, Any] | None: ...
     def get_many(self, scenario_ids: Iterable[str]) -> list[Scenario[Any, Any]]: ...
