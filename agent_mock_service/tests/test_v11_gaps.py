@@ -6,19 +6,19 @@ from dataclasses import replace
 
 import pytest
 
-from agent_mock_service.calibration import (
+from agent_mock_service.src.mock_core.calibration import (
     CalibrationBootstrapper,
     CalibrationProfile,
     StaticCalibrationCorpusProvider,
 )
-from agent_mock_service.config import RuntimeConfig
-from agent_mock_service.context import ScenarioContextBuilder
-from agent_mock_service.defaults import (
+from agent_mock_service.src.mock_core.config import RuntimeConfig
+from agent_mock_service.src.mock_core.context import ScenarioContextBuilder
+from agent_mock_service.src.mock_core.defaults import (
     HashingEncoder,
     JoiningContextFusionProvider,
     create_default_encoder,
 )
-from agent_mock_service.domain import (
+from agent_mock_service.src.mock_core.domain import (
     CalibrationSample,
     FeatureSet,
     JudgeCandidate,
@@ -30,11 +30,11 @@ from agent_mock_service.domain import (
     RecallFusionMode,
     RuntimeInteraction,
 )
-from agent_mock_service.lane import LaneManager
-from agent_mock_service.repository import SQLiteRepository
-from agent_mock_service.response import sse_event_stream
-from agent_mock_service.runtime import AgentMockRuntime
-from agent_mock_service.scoring import ScenarioScoreAggregator
+from agent_mock_service.src.mock_core.lane import LaneManager
+from agent_mock_service.src.mock_core.repository import SQLiteRepository
+from agent_mock_service.src.mock_core.response import sse_event_stream
+from agent_mock_service.src.mock_core.runtime import AgentMockRuntime
+from agent_mock_service.src.mock_core.scoring import ScenarioScoreAggregator
 
 
 class CountingEncoder(HashingEncoder):

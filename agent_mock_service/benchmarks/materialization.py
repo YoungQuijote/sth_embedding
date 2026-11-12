@@ -11,9 +11,9 @@ import time
 from pathlib import Path
 
 from agent_mock_service import AgentMockRuntime, MockRequest, MockSample, PositionRef, RuntimeConfig
-from agent_mock_service.defaults import HashingEncoder, JoiningContextFusionProvider
-from agent_mock_service.domain import RecallFusionMode
-from agent_mock_service.repository import SQLiteRepository
+from agent_mock_service.src.mock_core.defaults import HashingEncoder, JoiningContextFusionProvider
+from agent_mock_service.src.mock_core.domain import RecallFusionMode
+from agent_mock_service.src.mock_core.repository import SQLiteRepository
 
 
 class Encoder(HashingEncoder):

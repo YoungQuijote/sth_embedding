@@ -1,10 +1,10 @@
 """Stateful, deterministic Agentic-RAG mock runtime."""
 
-from .api import WsgiQueryApi, create_fastapi_app
-from .bm25 import BM25Recaller, DefaultTokenizer, EndpointBM25Index, JiebaTokenizer
-from .calibration import CalibrationConfig, EvidenceCalibrator, StaticCalibrationCorpusProvider
-from .config import RuntimeConfig
-from .domain import (
+from agent_mock_service.src.mock_core.api import WsgiQueryApi, create_fastapi_app
+from agent_mock_service.src.mock_core.bm25 import BM25Recaller, DefaultTokenizer, EndpointBM25Index, JiebaTokenizer
+from agent_mock_service.src.mock_core.calibration import CalibrationConfig, EvidenceCalibrator, StaticCalibrationCorpusProvider
+from agent_mock_service.src.mock_core.config import RuntimeConfig
+from agent_mock_service.src.mock_core.domain import (
     CalibrationSample,
     ContextReadResult,
     DependencyResolution,
@@ -16,11 +16,11 @@ from .domain import (
     PositionRef,
     ScenarioRound,
 )
-from .execution import ExecutionResource, ExecutionResourcePool, ManagedExecutionComponent
-from .materialization import PositionContextMaterializer
-from .plugin import BusinessPlugin, BusinessPluginRegistry
-from .reranker import BiEncoderReranker, CrossEncoderReranker
-from .runtime import AgentMockRuntime
+from agent_mock_service.src.mock_core.execution import ExecutionResource, ExecutionResourcePool, ManagedExecutionComponent
+from agent_mock_service.src.mock_core.materialization import PositionContextMaterializer
+from agent_mock_service.src.mock_core.plugin import BusinessPlugin, BusinessPluginRegistry
+from agent_mock_service.src.mock_core.reranker import BiEncoderReranker, CrossEncoderReranker
+from agent_mock_service.src.mock_core.runtime import AgentMockRuntime
 
 __all__ = [
     "AgentMockRuntime",

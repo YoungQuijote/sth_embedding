@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from agent_mock_service.calibration import CalibrationProfile
-from agent_mock_service.defaults import HashingEncoder, JoiningContextFusionProvider
-from agent_mock_service.domain import (
+from agent_mock_service.src.mock_core.calibration import CalibrationProfile
+from agent_mock_service.src.mock_core.defaults import HashingEncoder, JoiningContextFusionProvider
+from agent_mock_service.src.mock_core.domain import (
     FeatureSet,
     JudgeResult,
     MatchDecision,
@@ -10,8 +10,8 @@ from agent_mock_service.domain import (
     MockSample,
     RequestAffinityInfo,
 )
-from agent_mock_service.repository import SQLiteRepository
-from agent_mock_service.runtime import AgentMockRuntime
+from agent_mock_service.src.mock_core.repository import SQLiteRepository
+from agent_mock_service.src.mock_core.runtime import AgentMockRuntime
 
 
 class CountingFeatureExtractor:

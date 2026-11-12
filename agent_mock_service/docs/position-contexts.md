@@ -6,7 +6,7 @@
 
 ```python
 from agent_mock_service import AgentMockRuntime, MockSample, PositionRef
-from agent_mock_service.repository import SQLiteRepository
+from agent_mock_service.src.mock_core.repository import SQLiteRepository
 
 repository = SQLiteRepository("new-agent-mocks.db")
 runtime = AgentMockRuntime(repository)

@@ -5,26 +5,26 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from agent_mock_service.calibration import (
+from agent_mock_service.src.mock_core.calibration import (
     CalibrationBootstrapper,
     CalibrationProfile,
     fit_distribution,
 )
-from agent_mock_service.context import ScenarioContextBuilder
-from agent_mock_service.defaults import HashingEncoder, JoiningContextFusionProvider
-from agent_mock_service.domain import (
+from agent_mock_service.src.mock_core.context import ScenarioContextBuilder
+from agent_mock_service.src.mock_core.defaults import HashingEncoder, JoiningContextFusionProvider
+from agent_mock_service.src.mock_core.domain import (
     FeatureSet,
     MatchDecision,
     MockRequest,
     MockSample,
     RecallFusionMode,
 )
-from agent_mock_service.lane import LaneManager
-from agent_mock_service.recall import fuse_recall
-from agent_mock_service.repository import SQLiteRepository, compute_sample_hash
-from agent_mock_service.runtime import AgentMockRuntime
-from agent_mock_service.scoring import availability_prior
-from agent_mock_service.trace import JsonlTraceWriter, MemoryTraceWriter
+from agent_mock_service.src.mock_core.lane import LaneManager
+from agent_mock_service.src.mock_core.recall import fuse_recall
+from agent_mock_service.src.mock_core.repository import SQLiteRepository, compute_sample_hash
+from agent_mock_service.src.mock_core.runtime import AgentMockRuntime
+from agent_mock_service.src.mock_core.scoring import availability_prior
+from agent_mock_service.src.mock_core.trace import JsonlTraceWriter, MemoryTraceWriter
 
 
 @pytest.fixture
@@ -191,7 +191,7 @@ def test_calibration_quantiles_smoothing_and_missing_data():
 
 
 def test_availability_is_soft():
-    from agent_mock_service.domain import InvokeAvailability
+    from agent_mock_service.src.mock_core.domain import InvokeAvailability
 
     assert availability_prior(InvokeAvailability(1, 100)) == 0.0
     assert availability_prior(InvokeAvailability(10, 0)) == 1.0
@@ -201,7 +201,7 @@ def test_jsonl_trace_and_sse(repository, tmp_path):
     repository.register(sample(answer="你好"))
     path = tmp_path / "trace.jsonl"
     runtime = AgentMockRuntime(repository, trace=JsonlTraceWriter(path))
-    from agent_mock_service.domain import ResponseProtocol
+    from agent_mock_service.src.mock_core.domain import ResponseProtocol
 
     response = runtime.handle(
         MockRequest("/agent", "query", response_protocol=ResponseProtocol.SSE)
@@ -214,7 +214,7 @@ def test_jsonl_trace_and_sse(repository, tmp_path):
 
 
 def test_recall_fusion_modes():
-    from agent_mock_service.domain import ContextRecallCandidate, LocalRecallCandidate
+    from agent_mock_service.src.mock_core.domain import ContextRecallCandidate, LocalRecallCandidate
 
     local = [
         LocalRecallCandidate(str(i), "s", i, score, sample(position=i))

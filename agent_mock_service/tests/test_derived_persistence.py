@@ -2,11 +2,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from agent_mock_service import AgentMockRuntime, MockSample
-from agent_mock_service.defaults import DefaultFeatureComparator, HashingEncoder
-from agent_mock_service.derived import DerivedStore
-from agent_mock_service.domain import FeatureSet
-from agent_mock_service.recall import SemanticRecaller
-from agent_mock_service.repository import SQLiteRepository
+from agent_mock_service.src.mock_core.defaults import DefaultFeatureComparator, HashingEncoder
+from agent_mock_service.src.mock_core.derived import DerivedStore
+from agent_mock_service.src.mock_core.domain import FeatureSet
+from agent_mock_service.src.mock_core.recall import SemanticRecaller
+from agent_mock_service.src.mock_core.repository import SQLiteRepository
 
 
 class Encoder(HashingEncoder):
@@ -143,7 +143,7 @@ def test_corrupt_and_encoder_changed_vectors_rebuilt(tmp_path):
 
 def test_bm25_top_n_reranking_reuses_persisted_vectors_after_restart(tmp_path):
     from agent_mock_service import MockRequest, RuntimeConfig
-    from agent_mock_service.domain import RecallFusionMode
+    from agent_mock_service.src.mock_core.domain import RecallFusionMode
 
     path = tmp_path / "rerank.db"
     repo = SQLiteRepository(path)
