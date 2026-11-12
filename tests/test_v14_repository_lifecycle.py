@@ -215,14 +215,15 @@ def test_physical_delete_invalidates_and_rebuilds_later_context(repository):
     repo, encoder = repository
     first = repo.register(sample(position=1, round_id=1, query="Q1", answer="A1"))
     repo.register(sample(position=2, round_id=2, query="Q2", answer="A2"))
+    repo.finalize_round("s", 1)
     before = repo.get("s")
     assert "Q1" in before.positions[1].context.fused_context
     calls = encoder.document_calls
     repo.delete(first.sample_hash)
     after = repo.get("s")
     assert len(after.positions) == 1
-    assert "Q1" not in after.positions[0].context.fused_context
-    assert encoder.document_calls > calls
+    assert after.positions[0].context is None
+    assert encoder.document_calls == calls
 
 
 def test_embedding_index_lazily_converges_after_delete(repository):
@@ -241,7 +242,7 @@ def test_embedding_index_lazily_converges_after_delete(repository):
         "alpha", FeatureSet({}, {}), repo.list_endpoint("/agent"), 10, comparator
     )
     assert {item.sample_hash for item in refreshed} == {first.sample_hash}
-    assert encoder.batch_calls == 2
+    assert encoder.batch_calls == 1  # retained vector reused after removal
 
 
 def test_incompatible_sample_hash_schema_fails_fast(tmp_path):

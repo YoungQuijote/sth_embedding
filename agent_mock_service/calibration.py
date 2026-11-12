@@ -3,10 +3,10 @@ from __future__ import annotations
 import bisect
 import hashlib
 import json
+import logging
 import math
 import random
 import time
-import logging
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -60,7 +60,7 @@ class CalibrationProfile:
         return json.dumps(asdict(self), sort_keys=True)
 
     @classmethod
-    def from_json(cls, raw: str) -> "CalibrationProfile":
+    def from_json(cls, raw: str) -> CalibrationProfile:
         payload = json.loads(raw)
         payload["distributions"] = {
             name: CalibratedDistribution(**value)
@@ -127,7 +127,7 @@ class SemanticEvidenceCalibrator:
     name = "semantic"
     version = "scenario-max-loo-v1"
 
-    def __init__(self, bootstrapper: "CalibrationBootstrapper") -> None:
+    def __init__(self, bootstrapper: CalibrationBootstrapper) -> None:
         self.bootstrapper = bootstrapper
 
     def collect(self, samples: Sequence[CalibrationSample], **kwargs: Any):
@@ -147,7 +147,7 @@ class BM25EvidenceCalibrator:
     name = "bm25"
     version = "scenario-max-loo-v1"
 
-    def __init__(self, bootstrapper: "CalibrationBootstrapper") -> None:
+    def __init__(self, bootstrapper: CalibrationBootstrapper) -> None:
         self.bootstrapper = bootstrapper
 
     def collect(self, samples: Sequence[CalibrationSample], **kwargs: Any):
@@ -286,7 +286,9 @@ class CalibrationBootstrapper:
         )
 
     @staticmethod
-    def corpus_fingerprint(samples: Sequence[CalibrationSample]) -> str:
+    def corpus_fingerprint(
+        samples: Sequence[CalibrationSample], *, include_features: bool = True
+    ) -> str:
         records = [
             {
                 "endpoint_id": sample.endpoint_id,
@@ -298,7 +300,10 @@ class CalibrationBootstrapper:
                 "features": {
                     "hard": sample.features.hard_features,
                     "soft": sample.features.soft_features,
-                },
+                    "producer": sample.feature_fingerprint,
+                }
+                if include_features
+                else None,
             }
             for sample in samples
         ]
@@ -368,15 +373,25 @@ class CalibrationBootstrapper:
     ) -> tuple[str, str]:
         if config == CalibrationConfig():
             return self.algorithm_version, "semantic-only-v1"
+        if (
+            "feature" in config.enabled_evidences
+            and feature_comparator is not None
+            and not getattr(feature_comparator, "fingerprint", None)
+        ):
+            raise ValueError("calibrated FeatureComparator requires a reliable fingerprint")
         details = {
             "config": asdict(config),
             "calibrators": {
                 name: self.calibrators[name].version for name in sorted(config.enabled_evidences)
             },
             "encoder": encoder.fingerprint,
-            "tokenizer": getattr(tokenizer, "fingerprint", None),
-            "bm25": [bm25_k1, bm25_b],
-            "feature_comparator": getattr(feature_comparator, "fingerprint", None),
+            "tokenizer": getattr(tokenizer, "fingerprint", None)
+            if "bm25" in config.enabled_evidences
+            else None,
+            "bm25": [bm25_k1, bm25_b] if "bm25" in config.enabled_evidences else None,
+            "feature_comparator": getattr(feature_comparator, "fingerprint", None)
+            if "feature" in config.enabled_evidences
+            else None,
         }
         raw = json.dumps(details, sort_keys=True, default=sorted)
         fingerprint = hashlib.sha256(raw.encode()).hexdigest()
@@ -395,7 +410,9 @@ class CalibrationBootstrapper:
         bm25_b: float = 0.75,
     ) -> CalibrationProfile:
         config = config or CalibrationConfig()
-        dataset_fingerprint = self.corpus_fingerprint(samples)
+        dataset_fingerprint = self.corpus_fingerprint(
+            samples, include_features="feature" in config.enabled_evidences
+        )
         algorithm_version, compatibility = self._compatibility(
             config, encoder, tokenizer, feature_comparator, bm25_k1, bm25_b
         )
@@ -441,8 +458,10 @@ class CalibrationBootstrapper:
         **kwargs: Any,
     ) -> CalibrationProfile:
         samples = list(corpus_provider.load())
-        fingerprint = self.corpus_fingerprint(samples)
         config = kwargs.get("config") or CalibrationConfig()
+        fingerprint = self.corpus_fingerprint(
+            samples, include_features="feature" in config.enabled_evidences
+        )
         algorithm_version, _ = self._compatibility(
             config,
             encoder,

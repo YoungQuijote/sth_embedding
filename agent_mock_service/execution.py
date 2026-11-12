@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 ResultT = TypeVar("ResultT")
 

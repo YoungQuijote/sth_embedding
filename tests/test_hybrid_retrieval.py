@@ -9,9 +9,9 @@ import pytest
 
 from agent_mock_service.bm25 import BM25Recaller, DefaultTokenizer
 from agent_mock_service.calibration import (
+    CalibratedDistribution,
     CalibrationBootstrapper,
     CalibrationConfig,
-    CalibratedDistribution,
     CalibrationProfile,
 )
 from agent_mock_service.config import RuntimeConfig
@@ -32,11 +32,10 @@ from agent_mock_service.domain import (
     RecallCandidate,
     RecallFusionMode,
 )
+from agent_mock_service.execution import ExecutionResourcePool
 from agent_mock_service.recall import fuse_recall_candidates
 from agent_mock_service.repository import SQLiteRepository
-from agent_mock_service.reranker import BiEncoderReranker
-from agent_mock_service.reranker import CrossEncoderReranker
-from agent_mock_service.execution import ExecutionResourcePool
+from agent_mock_service.reranker import BiEncoderReranker, CrossEncoderReranker
 from agent_mock_service.runtime import AgentMockRuntime
 from agent_mock_service.scoring import BayesPositionScorer
 

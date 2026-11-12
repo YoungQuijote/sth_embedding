@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import math
-
-from .calibration import CalibrationProfile
 from collections import defaultdict
 from typing import Any
 
+from .calibration import CalibrationProfile
 from .contracts import FeatureComparator
 from .defaults import ipv4_affinity
 from .domain import (
+    BM25RecallCandidate,
     ContextRecallCandidate,
     FeatureRelation,
     FeatureSet,
@@ -16,10 +16,9 @@ from .domain import (
     JudgeCandidate,
     LaneRuntimeState,
     LocalRecallCandidate,
-    BM25RecallCandidate,
-    RecallCandidate,
     PositionPathEvidence,
     PositionScore,
+    RecallCandidate,
     RequestAffinityInfo,
     Scenario,
     ScenarioJudgeCandidate,
@@ -271,7 +270,7 @@ class BayesEvidenceBuilder:
                                 lane_id,
                                 scenario_semantic[scenario.scenario_id],
                                 semantic,
-                                context_score,
+                                context_score if position.context else None,
                                 feature_raw,
                                 affinity_score,
                                 position.sample.round_id,
@@ -287,7 +286,9 @@ class BayesEvidenceBuilder:
 
 
 def _ordered_rounds(scenario: Scenario[Any, Any]) -> list[str | int]:
-    values = {position.sample.round_id for position in scenario.positions}
+    values = {r.round_id for r in scenario.round_states} or {
+        position.sample.round_id for position in scenario.positions
+    }
     try:
         return sorted(values, key=int)
     except (TypeError, ValueError):
@@ -297,11 +298,15 @@ def _ordered_rounds(scenario: Scenario[Any, Any]) -> list[str | int]:
 def _transition_distance(
     ordered_rounds: list[str | int], active_rounds: set[str | int], candidate_round: str | int
 ) -> int | None:
-    index_by_round = {str(value): index for index, value in enumerate(ordered_rounds)}
+    from .dag import normalize_round
+
+    index_by_round = {normalize_round(value): index for index, value in enumerate(ordered_rounds)}
     active_indexes = [
-        index_by_round[str(value)] for value in active_rounds if str(value) in index_by_round
+        index_by_round[normalize_round(value)]
+        for value in active_rounds
+        if normalize_round(value) in index_by_round
     ]
-    candidate_index = index_by_round.get(str(candidate_round))
+    candidate_index = index_by_round.get(normalize_round(candidate_round))
     if not active_indexes or candidate_index is None:
         return None
     return candidate_index - min(active_indexes)

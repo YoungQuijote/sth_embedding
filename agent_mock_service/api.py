@@ -5,8 +5,8 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from .domain import MockRequest, ResponseProtocol
-from .runtime import AgentMockRuntime
 from .response import sse_event_stream
+from .runtime import AgentMockRuntime
 
 
 class WsgiQueryApi:
@@ -66,8 +66,8 @@ def create_fastapi_app(runtime: AgentMockRuntime) -> Any:
     """Create an optional FastAPI adapter with native streaming SSE transport."""
     try:
         from fastapi import FastAPI, Request
-        from fastapi.responses import JSONResponse, StreamingResponse
         from fastapi.concurrency import run_in_threadpool
+        from fastapi.responses import JSONResponse, StreamingResponse
 
         try:
             from fastapi.sse import EventSourceResponse

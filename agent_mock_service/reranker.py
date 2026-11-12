@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from .contracts import EmbeddingEncoder
 from .defaults import cosine_similarity
@@ -33,8 +34,9 @@ def _stable_rerank(
 class BiEncoderReranker:
     """Default reranker reusing dense recall scores and cached document embeddings."""
 
-    def __init__(self, encoder: EmbeddingEncoder) -> None:
+    def __init__(self, encoder: EmbeddingEncoder, store=None) -> None:
         self.encoder = encoder
+        self.store = store
         self.fingerprint = f"bi-encoder-reranker:{encoder.fingerprint}"
         self._document_cache: dict[str, list[float]] = {}
         self._lock = threading.RLock()
@@ -45,6 +47,7 @@ class BiEncoderReranker:
         candidates: Sequence[RecallCandidate],
         *,
         top_n: int | None = None,
+        metrics=None,
     ) -> list[RecallCandidate]:
         # Without explicit truncation, preserve Union coverage and avoid extra encoding.
         if top_n is None:
@@ -53,19 +56,41 @@ class BiEncoderReranker:
                 for candidate in candidates
             ]
         query_embedding = self.encoder.encode_query(query)
-        scores = []
+        persisted = {}
+        if self.store:
+            with self.store.repository._read():
+                samples = [
+                    sample
+                    for candidate in candidates
+                    if candidate.source_scores.get("semantic") is None
+                    and candidate.sample_hash
+                    and (sample := self.store.repository.get_by_hash(candidate.sample_hash))
+                ]
+            persisted = self.store.document_vectors(
+                list({sample.sample_hash: sample for sample in samples}.values()),
+                self.encoder,
+                metrics=metrics,
+            )
+        scores, retained = [], []
         for candidate in candidates:
             dense = candidate.source_scores.get("semantic")
             if dense is None:
-                with self._lock:
-                    embedding = self._document_cache.get(candidate.sample_hash or "")
+                if self.store:
+                    embedding = persisted.get(candidate.sample_hash)
+                    if embedding is None:
+                        continue  # deleted while encoding; never resurrect a stale candidate
+                else:
+                    key = f"{self.encoder.fingerprint}:{candidate.sample_hash or candidate.mocked_query}"
+                    with self._lock:
+                        embedding = self._document_cache.get(key)
                     if embedding is None:
                         embedding = self.encoder.encode_document(candidate.mocked_query)
-                        if candidate.sample_hash:
-                            self._document_cache[candidate.sample_hash] = embedding
+                        with self._lock:
+                            self._document_cache[key] = embedding
                 dense = cosine_similarity(query_embedding, embedding)
+            retained.append(candidate)
             scores.append(dense)
-        return _stable_rerank(candidates, scores, top_n)
+        return _stable_rerank(retained, scores, top_n)
 
 
 class CrossEncoderReranker:

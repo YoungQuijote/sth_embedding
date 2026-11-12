@@ -78,8 +78,8 @@ features = resources.call_component(extractor, extractor.extract, mocked_query)
 `resources.shutdown()`；多进程部署的总并发仍需由外部基础设施约束。
 `call_component()` 是“提交并立即等待”的同步 API，适合单次 Feature/Judge 调用；Scenario
 Position 和 Lane Context 等批量独立 Fusion 则使用 `submit_component()` 先整体 fan-out、再按原顺序
-fan-in。Repository 会先串行读取事实并分流 Context Cache hit/miss，只对当前批次的冷 Scenario
-统一执行 Fusion fan-out，不会把 SQLite 操作投入线程池。
+fan-in。Repository 读取一致事实快照，Position Materializer 只对显式目标进行 Fusion fan-out，
+SQLite 操作不进入业务线程池。
 
 Repository、Encoder、Lane、Calibration 和 Trace 保持 Service 级共享；Parser、Feature、Fusion、
 Affinity 与 Judge 按请求 Endpoint 路由。SQLite 的 `(scenario_id, position_id)` 现在是跨
@@ -90,8 +90,8 @@ Endpoint 唯一键；含有重复位置的旧数据库会在启动时被拒绝�
 `sample_hash` v3 覆盖 Endpoint、Scenario、Round、Position、Query 和 Answer。Feature 是由业务
 Extractor 生成的派生匹配元数据，不参与稳定 Sample Identity；重复注册会保留首次持久化的
 Feature，只增加 `registry_times` 并合并 Affinity。
-Repository 会在 SQLite `repository_metadata` 中校验 hash version；已有事实数据但缺少兼容
-版本标记的旧 Debug 数据库会 fail fast，需要迁移或重建。
+Repository 会在 SQLite `repository_metadata` 中校验 hash version；不兼容
+Schema 的旧数据库会 fail fast，需要显式创建新库并重新注册；本版本不自动迁移。
 
 普通业务撤销注册使用引用计数语义：
 
@@ -102,8 +102,8 @@ repository.delete_scenario(scenario_id, force=False, affinity=current_affinity)
 
 只有最后一次 `unregister` 才物理删除事实。Admin/Debug 清理可以显式调用
 `repository.delete(sample_hash)` 或 `repository.delete_scenario(scenario_id, force=True)`。
-跨 Endpoint Scenario 的删除在单一 SQLite transaction 中完成；物理删除会使 Scenario Context
-Cache 失效，而 Endpoint Embedding Index 会在下一次 Recall 时根据 sample hash signature 自动收敛。
+跨 Endpoint Scenario 的删除与跨 Scenario 依赖失效在同一 SQLite transaction 中完成。
+物理删除自动 Reopen 相关 Round，保留外部引用；文档索引按当前 membership 恢复并只补缺失向量。
 
 唯一字符串 Exact Match 是最短路径：完成 Query Parse 和 Endpoint Sample 查询后直接返回，
 不会执行 Affinity/Feature Extraction、Semantic Encoding、Context Fusion 或 Judge。多个相同
@@ -159,8 +159,26 @@ Context、BM25 和 Feature Calibrator。默认仍只构建 Semantic；缺少可�
 * 内存 Lane、当前轮加下一轮滑动窗口和 TTL；
 * 同一 Scenario 的多 Lane runtime path、候选级 Lane context 隔离；
 * 多 Endpoint BusinessPlugin 路由与跨 Endpoint Scenario/Lane；
-* Endpoint 文档 embedding index 与 lazy Scenario context cache；
+* 持久化 Endpoint 文档向量、Position Context Artifact 与 Context Embedding；
+* Round OPEN/SEALED、跨 Scenario 依赖 DAG、精细失效与版本条件写回；
 * 从独立 Calibration Corpus bootstrap 并由 SQLite 持久化的 Calibration Profile；
 * deterministic FakeJudge 及可替换 LLM Judge contract；
 * HTTP JSON / SSE renderer；
 * MATCH、MISS、异常路径的 JSONL RuntimeTrace。
+
+
+## Position Context 优化版本
+
+完整接口、兼容变化和示例见 [Position Context 指南](docs/position-contexts.md)，
+表结构与重建步骤见 [Schema 字典](docs/optimization-schema.md)，
+验收和实测结果见 [六阶段交付报告](docs/optimization-delivery.md)。
+
+多轮默认历史需要显式 `finalize_round`；未封存或缺失的历史不构造完整 Context。
+推荐通过 `runtime.register(sample)` 进行带 Feature 生产者版本的注册。
+Repository 的 `get_facts_many` / `get_position_contexts` 是纯读，
+`runtime.materializer.ensure_position_contexts(refs, reason="rebuild")` 是显式物化入口。
+唯一 Exact Match 仍绕过模型；非 Exact Match 仅为 Lane 目标与 Reranker 保留的 Position 准备静态 Context。
+
+开发验证：`python -m pytest`，`ruff check agent_mock_service tests benchmarks`，
+`ruff format --check agent_mock_service tests benchmarks`。
+性能脚本：`python benchmarks/materialization.py`；基线对照：`python benchmarks/compare_baseline.py`。

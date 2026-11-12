@@ -55,11 +55,17 @@ class LaneManager:
         now: float | None = None,
     ) -> LaneRuntimeState | None:
         rounds = sorted(
-            {_round_number(position.sample.round_id) for position in scenario.positions}
+            {_round_number(r.round_id) for r in scenario.round_states}
+            or {_round_number(p.sample.round_id) for p in scenario.positions}
         )
+        sealed = {
+            _round_number(r.round_id)
+            for r in scenario.round_states
+            if r.round_position_completeness == "SEALED"
+        }
         matched_round = _round_number(interaction.round_id)
         # No lane for a single-round scenario or after the terminal round completes.
-        if len(rounds) <= 1:
+        if len(rounds) <= 1 and matched_round in sealed:
             return None
         current = time.time() if now is None else now
         with self._lock:
@@ -97,7 +103,7 @@ class LaneManager:
             matched_index = rounds.index(matched_round)
             if matched_index > previous_index:
                 base_index = matched_index
-            elif positions_in_previous <= matched_in_previous:
+            elif previous_min in sealed and positions_in_previous <= matched_in_previous:
                 base_index = min(previous_index + 1, len(rounds) - 1)
             else:
                 base_index = previous_index
@@ -112,13 +118,59 @@ class LaneManager:
                 if item.scenario_id == scenario.scenario_id
                 and _round_number(item.round_id) == rounds[-1]
             }
-            if matched_round == rounds[-1] and terminal_positions <= matched_terminal:
+            if (
+                matched_round == rounds[-1]
+                and rounds[-1] in sealed
+                and terminal_positions <= matched_terminal
+            ):
                 self._lanes.pop(lane.lane_id, None)
                 return None
             lane.active_rounds = set(rounds[base_index : base_index + 2])
             lane.last_active_at = current
             lane.state_version += 1
             return lane
+
+    def reevaluate(self, scenarios):
+        """Observe newly sealed rounds even when no new match has arrived."""
+        with self._lock:
+            for lane in list(self._lanes.values()):
+                for sid in lane.scenario_hypotheses:
+                    scenario = scenarios.get(sid)
+                    if not scenario or not lane.active_rounds:
+                        continue
+                    rounds = sorted({_round_number(r.round_id) for r in scenario.round_states})
+                    sealed = {
+                        _round_number(r.round_id)
+                        for r in scenario.round_states
+                        if r.round_position_completeness == "SEALED"
+                    }
+                    if not rounds:
+                        continue
+                    current = min(_round_number(r) for r in lane.active_rounds)
+                    if current not in rounds:
+                        continue
+                    index = rounds.index(current)
+                    while rounds[index] in sealed:
+                        positions = {
+                            p.position
+                            for p in scenario.positions
+                            if _round_number(p.sample.round_id) == rounds[index]
+                        }
+                        matched = {
+                            i.position
+                            for i in lane.interactions
+                            if i.scenario_id == sid and _round_number(i.round_id) == rounds[index]
+                        }
+                        if not positions <= matched:
+                            break
+                        if index == len(rounds) - 1:
+                            self._lanes.pop(lane.lane_id, None)
+                            break
+                        index += 1
+                    updated = set(rounds[index : index + 2])
+                    if index != rounds.index(current) and updated != lane.active_rounds:
+                        lane.active_rounds = updated
+                        lane.state_version += 1
 
     def select_direct_lane(self, scenario_id: str, round_id: str | int) -> str | None:
         compatible = self.compatible(scenario_id, round_id)

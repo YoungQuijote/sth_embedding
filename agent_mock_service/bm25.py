@@ -4,10 +4,11 @@ import hashlib
 import math
 import re
 import threading
+import time
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 from .contracts import Tokenizer
 from .domain import BM25RecallCandidate, MockSample
@@ -137,7 +138,7 @@ class BM25Recaller:
         self._lock = threading.RLock()
 
     def recall(
-        self, query: str, samples: Iterable[MockSample], k: int
+        self, query: str, samples: Iterable[MockSample], k: int, timings=None
     ) -> list[BM25RecallCandidate]:
         values = list(samples)
         endpoint_id = values[0].endpoint_id if values else ""
@@ -146,8 +147,12 @@ class BM25Recaller:
             if index is None or index.tokenizer.fingerprint != self.tokenizer.fingerprint:
                 index = EndpointBM25Index(self.tokenizer, self.k1, self.b)
                 self.indexes[endpoint_id] = index
+        tick = time.perf_counter()
         index.refresh_if_changed(values)
-        return [
+        if timings is not None:
+            timings["bm25_index_load_ms"] = (time.perf_counter() - tick) * 1000
+        tick = time.perf_counter()
+        result = [
             BM25RecallCandidate(
                 sample.sample_hash,
                 str(sample.sample_id),
@@ -158,3 +163,6 @@ class BM25Recaller:
             )
             for rank, (sample, score) in enumerate(index.recall(query, k), start=1)
         ]
+        if timings is not None:
+            timings["bm25_recall_ms"] = (time.perf_counter() - tick) * 1000
+        return result

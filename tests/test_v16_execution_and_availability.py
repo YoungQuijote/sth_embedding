@@ -129,7 +129,7 @@ def test_duplicate_resource_registration_with_different_capacity_fails() -> None
 
 class ManagedFusion(ConcurrencyProbe):
     def fuse(self, messages: list[object]) -> str:
-        content = "|".join(getattr(message, "content") for message in messages)
+        content = "|".join(message.content for message in messages)
         return self.run(content)
 
 

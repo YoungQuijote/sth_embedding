@@ -72,6 +72,7 @@ def test_scenario_context_excludes_current_and_same_round_answers(repository):
     repository.register(sample("q1", "secret-a1", round_id=1, position=1))
     repository.register(sample("q1b", "secret-a1b", round_id=1, position=2))
     repository.register(sample("q2", "secret-a2", round_id=2, position=3))
+    repository.finalize_round("1", 1)
     scenario = repository.get("1")
     assert scenario is not None
     contexts = {item.position: item.context.fused_context for item in scenario.positions}
@@ -82,7 +83,9 @@ def test_scenario_context_excludes_current_and_same_round_answers(repository):
 
 
 def test_direct_match_returns_only_stored_answer_and_no_single_round_lane(repository):
-    stored = repository.register(sample(" exact ", "stored answer"))
+    stored = repository.register(
+        sample(" exact ", "stored answer"), round_position_completeness=True
+    )
     trace = MemoryTraceWriter()
     runtime = AgentMockRuntime(repository, trace=trace)
     response = runtime.handle(MockRequest("/agent", "exact"))
@@ -124,12 +127,18 @@ def test_semantic_match_and_endpoint_hard_scope(repository):
 
 
 def test_hard_feature_conflict_eliminates_candidate(repository):
-    repository.register(sample("device error", "E1 answer", scenario="e1", hard={"code": "E1"}))
     repository.register(
-        sample("device error", "E2 answer", scenario="e2", position=2, hard={"code": "E2"})
+        sample("device error", "E1 answer", scenario="e1", hard={"code": "E1"}),
+        extractor_fingerprint="codes-v1",
+    )
+    repository.register(
+        sample("device error", "E2 answer", scenario="e2", position=2, hard={"code": "E2"}),
+        extractor_fingerprint="codes-v1",
     )
 
     class Extractor:
+        fingerprint = "codes-v1"
+
         def extract(self, query):
             return FeatureSet({"code": "E2"}, {})
 

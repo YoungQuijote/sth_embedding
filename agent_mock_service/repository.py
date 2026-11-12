@@ -7,18 +7,20 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-from .context import ScenarioContextBuilder, ScenarioContextCache
+from .context import ScenarioContextBuilder
+from .dag import normalize_round
 from .domain import (
     FeatureSet,
     InvokeAvailability,
     MockSample,
     RequestAffinityInfo,
     Scenario,
-    ScenarioContext,
     ScenarioPosition,
+    ScenarioRound,
 )
+from .storage import SCHEMA, SCHEMA_VERSION, LifecycleStore, consistent_read
 
 SAMPLE_HASH_VERSION = "3"
 INCOMPATIBLE_DATABASE_MESSAGE = (
@@ -50,14 +52,14 @@ def compute_sample_hash(sample: MockSample) -> str:
         "mocked_query": sample.mocked_query.strip(),
         "mocked_answer": sample.mocked_answer.strip(),
         "sample_id": str(sample.sample_id).strip(),
-        "round_id": str(sample.round_id).strip(),
+        "round_id": normalize_round(sample.round_id),
         "position_id": sample.position_id,
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-class SQLiteRepository:
+class SQLiteRepository(LifecycleStore):
     """SQLite fact store with endpoint tables hidden behind repository methods."""
 
     def __init__(
@@ -65,18 +67,40 @@ class SQLiteRepository:
     ) -> None:
         self.path = str(path)
         self.context_builder = context_builder
-        self.context_cache = ScenarioContextCache()
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._init_schema()
+        self.materializer = None
+        self.last_materialization = None
+        self.last_derived_errors = {}
+        self.last_post_commit_error = None
+        self.registration_callback = None
+        if context_builder is not None:
+            self.bind_context_builder(context_builder)
 
     def close(self) -> None:
         self._connection.close()
 
     def _init_schema(self) -> None:
+        tables = {
+            r[0]
+            for r in self._connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if tables:
+            metadata = (
+                dict(self._connection.execute("SELECT key,value FROM repository_metadata"))
+                if "repository_metadata" in tables
+                else {}
+            )
+            if (
+                metadata.get("schema_version") != SCHEMA_VERSION
+                or metadata.get("sample_hash_version") != SAMPLE_HASH_VERSION
+            ):
+                self._connection.close()
+                raise RuntimeError(INCOMPATIBLE_DATABASE_MESSAGE)
         self._connection.executescript("""
         CREATE TABLE IF NOT EXISTS endpoints(endpoint_id TEXT PRIMARY KEY, table_name TEXT UNIQUE NOT NULL);
         CREATE TABLE IF NOT EXISTS scenario_membership(
@@ -114,6 +138,11 @@ class SQLiteRepository:
                 "existing SQLite database contains duplicate scenario positions; "
                 "rebuild or migrate it before starting AgentMockService"
             ) from error
+        self._connection.executescript(SCHEMA)
+        self._connection.execute(
+            "INSERT OR IGNORE INTO repository_metadata VALUES('schema_version',?)",
+            (SCHEMA_VERSION,),
+        )
         self._connection.commit()
 
     def _table(self, endpoint_id: str, create: bool = False) -> str:
@@ -136,12 +165,12 @@ class SQLiteRepository:
           UNIQUE(sample_id, position_id))''')
         return table
 
-    def register(
+    def _register_fact(
         self, sample: MockSample, affinity: RequestAffinityInfo | None = None
     ) -> MockSample:
         sample_hash = compute_sample_hash(sample)
         now = time.time()
-        with self._lock, self._connection:
+        with self._write():
             table = self._table(sample.endpoint_id, create=True)
             global_position = self._connection.execute(
                 "SELECT sample_hash FROM scenario_membership WHERE scenario_id=? AND position_id=?",
@@ -208,8 +237,6 @@ class SQLiteRepository:
                 ) from error
             # sample_hash covers all static context inputs. Duplicate registration only
             # changes registry_times and must not invalidate derived embeddings.
-            if existing_position is None:
-                self.context_cache.invalidate(str(sample.sample_id))
         result = self.get_by_hash(sample_hash)
         assert result is not None
         return result
@@ -226,8 +253,11 @@ class SQLiteRepository:
             FeatureSet(features["hard"], features["soft"]),
             row["sample_hash"],
             InvokeAvailability(row["registry_times"], row["invoked_times"]),
+            self._sources(row["sample_id"], row["position_id"]),
+            self._generation(row["sample_id"], row["position_id"]),
         )
 
+    @consistent_read
     def list_endpoint(self, endpoint_id: str) -> list[MockSample]:
         table = self._table(endpoint_id)
         if not table:
@@ -239,6 +269,7 @@ class SQLiteRepository:
             )
         ]
 
+    @consistent_read
     def get_by_hash(self, sample_hash: str) -> MockSample | None:
         member = self._connection.execute(
             "SELECT endpoint_id FROM scenario_membership WHERE sample_hash=?", (sample_hash,)
@@ -262,6 +293,7 @@ class SQLiteRepository:
         )
         if member is None:
             return False, None
+        sample = self.get_by_hash(sample_hash)
         table = self._table(member["endpoint_id"])
         cursor = self._connection.execute(
             f'DELETE FROM "{table}" WHERE sample_hash=?', (sample_hash,)
@@ -273,6 +305,7 @@ class SQLiteRepository:
         )
         if membership_cursor.rowcount != 1:
             raise RuntimeError("sample fact and scenario_membership are inconsistent")
+        self._after_delete_locked(sample)
         return True, str(member["scenario_id"])
 
     def _unregister_locked(
@@ -321,25 +354,23 @@ class SQLiteRepository:
                 )
         return False, None
 
-    def unregister(self, sample_hash: str, affinity: RequestAffinityInfo | None = None) -> bool:
+    def _unregister_fact(
+        self, sample_hash: str, affinity: RequestAffinityInfo | None = None
+    ) -> bool:
         """Undo one registration; return True only when the fact is physically deleted."""
         with self._lock:
-            with self._connection:
-                deleted, scenario_id = self._unregister_locked(sample_hash, affinity)
-            if deleted and scenario_id is not None:
-                self.context_cache.invalidate(scenario_id)
+            with self._write():
+                deleted, _scenario_id = self._unregister_locked(sample_hash, affinity)
             return deleted
 
-    def delete(self, sample_hash: str) -> bool:
+    def _delete_fact(self, sample_hash: str) -> bool:
         """Idempotently force-delete one sample regardless of registry_times."""
         with self._lock:
-            with self._connection:
-                deleted, scenario_id = self._delete_locked(sample_hash)
-            if deleted and scenario_id is not None:
-                self.context_cache.invalidate(scenario_id)
+            with self._write():
+                deleted, _scenario_id = self._delete_locked(sample_hash)
             return deleted
 
-    def delete_scenario(
+    def _delete_scenario_facts(
         self,
         scenario_id: str,
         *,
@@ -348,25 +379,21 @@ class SQLiteRepository:
     ) -> int:
         """Atomically unregister or force-delete every cross-endpoint scenario position."""
         with self._lock:
-            physically_deleted = False
-            with self._connection:
+            with self._write():
                 members = self._connection.execute(
                     "SELECT * FROM scenario_membership WHERE scenario_id=? ORDER BY position_id",
                     (str(scenario_id),),
                 ).fetchall()
                 for member in members:
-                    deleted, _ = (
+                    _deleted, _ = (
                         self._delete_locked(member["sample_hash"], member)
                         if force
                         else self._unregister_locked(member["sample_hash"], affinity, member)
                     )
-                    physically_deleted = physically_deleted or deleted
-            if physically_deleted:
-                self.context_cache.invalidate(str(scenario_id))
             return len(members)
 
     def increment_invoked(self, sample_hash: str) -> None:
-        with self._lock, self._connection:
+        with self._write():
             member = self._connection.execute(
                 "SELECT endpoint_id FROM scenario_membership WHERE sample_hash=?", (sample_hash,)
             ).fetchone()
@@ -380,6 +407,7 @@ class SQLiteRepository:
             if cursor.rowcount != 1:
                 raise KeyError(sample_hash)
 
+    @consistent_read
     def get_facts(self, scenario_id: str) -> Scenario[Any, Any] | None:
         """Load fresh scenario facts without context fusion or document encoding."""
         members = self._connection.execute(
@@ -399,98 +427,72 @@ class SQLiteRepository:
                     str(scenario_id),
                     sample.position_id,
                     sample,
-                    ScenarioContext(sample.mocked_query, sample.mocked_query),
+                    None,
                     sample.features,
                 )
             )
             affinities.extend(
                 RequestAffinityInfo(**item) for item in json.loads(member["affinity_json"])
             )
-        return Scenario(str(scenario_id), positions, affinities)
+        rounds = [
+            ScenarioRound(
+                r["scenario_id"],
+                r["round_id"],
+                r["completeness"],
+                r["expected_position_count"],
+                r["revision"],
+            )
+            for r in self._connection.execute(
+                "SELECT * FROM scenario_rounds WHERE scenario_id=?", (str(scenario_id),)
+            )
+        ]
+        return Scenario(str(scenario_id), positions, affinities, rounds)
 
     def get(self, scenario_id: str) -> Scenario[Any, Any] | None:
         scenarios = self.get_many([scenario_id])
         return scenarios[0] if scenarios else None
 
-    def _context_key(self, scenario: Scenario[Any, Any]) -> tuple[str, str]:
-        data_fingerprint = hashlib.sha256(
-            "|".join(position.sample.sample_hash for position in scenario.positions).encode()
-        ).hexdigest()
-        encoder_fingerprint = self.context_builder.fingerprint if self.context_builder else "none"
-        return encoder_fingerprint, data_fingerprint
-
-    @staticmethod
-    def _rehydrate(
-        scenario: Scenario[Any, Any], contexts: dict[int, ScenarioContext]
-    ) -> Scenario[Any, Any]:
-        """Combine fresh dynamic facts with cached static derived contexts."""
-        return Scenario(
-            scenario.scenario_id,
-            [
-                ScenarioPosition(
-                    position.scenario_id,
-                    position.position,
-                    position.sample,
-                    contexts[position.position],
-                    position.features,
-                )
-                for position in scenario.positions
-            ],
-            scenario.registry_affinity_infos,
-        )
-
     def bind_context_builder(self, builder: ScenarioContextBuilder) -> None:
-        """Bind the runtime-owned encoder and invalidate incompatible derived vectors."""
-        current = self.context_builder.fingerprint if self.context_builder else None
-        if current != builder.fingerprint:
-            self.context_cache.clear()
-        self.context_builder = builder
+        from .materialization import PositionContextMaterializer
 
-    def get_many(self, scenario_ids: Iterable[str]) -> list[Scenario[Any, Any]]:
-        # SQLite reads and cache decisions remain serial on the caller thread. Only
-        # independent business fusion calls are fanned out by the context builder.
-        ordered_facts = [
-            scenario
-            for scenario_id in scenario_ids
-            if (scenario := self.get_facts(scenario_id)) is not None
-        ]
-        results: list[Scenario[Any, Any] | None] = [None] * len(ordered_facts)
-        cold: list[Scenario[Any, Any]] = []
-        cold_metadata: list[tuple[int, str, str]] = []
+        with self._lock:
+            self.registration_callback = None
+            self.context_builder = builder
+            self.materializer = PositionContextMaterializer(self, builder)
 
-        for index, scenario in enumerate(ordered_facts):
-            encoder_fingerprint, data_fingerprint = self._context_key(scenario)
-            cached = self.context_cache.get(
-                scenario.scenario_id, encoder_fingerprint, data_fingerprint
-            )
-            if cached is not None:
-                results[index] = self._rehydrate(scenario, cached)
-            else:
-                cold.append(scenario)
-                cold_metadata.append((index, encoder_fingerprint, data_fingerprint))
+    def get_facts_many(self, scenario_ids):
+        with self._read():
+            return [
+                value
+                for sid in dict.fromkeys(scenario_ids)
+                if (value := self.get_facts(sid)) is not None
+            ]
 
-        built = (
-            self.context_builder.build_many(cold)
-            if self.context_builder is not None and cold
-            else cold
-        )
-        for scenario, (index, encoder_fingerprint, data_fingerprint) in zip(
-            built, cold_metadata, strict=True
-        ):
-            contexts = {position.position: position.context for position in scenario.positions}
-            self.context_cache.put(
-                scenario.scenario_id, encoder_fingerprint, data_fingerprint, contexts
-            )
-            results[index] = scenario
+    def get_many(self, scenario_ids):
+        """Deprecated compatibility facade; may perform model IO. Prefer facts + explicit ensure."""
+        from .domain import PositionRef
 
-        return [scenario for scenario in results if scenario is not None]
+        scenarios = self.get_facts_many(scenario_ids)
+        if self.materializer:
+            refs = [PositionRef(p.scenario_id, p.position) for s in scenarios for p in s.positions]
+            results = self.materializer.ensure_position_contexts(
+                refs, reason="compatibility"
+            ).results
+            for scenario in scenarios:
+                for position in scenario.positions:
+                    position.context = results[
+                        PositionRef(position.scenario_id, position.position)
+                    ].artifact
+        return scenarios
 
+    @consistent_read
     def list_all(self) -> list[MockSample]:
         endpoints = self._connection.execute(
             "SELECT endpoint_id FROM endpoints ORDER BY endpoint_id"
         ).fetchall()
         return [sample for row in endpoints for sample in self.list_endpoint(row[0])]
 
+    @consistent_read
     def dataset_fingerprint(self) -> str:
         records = []
         for sample in self.list_all():
@@ -515,12 +517,13 @@ class SQLiteRepository:
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def save_calibration_profile(self, profile: Any) -> None:
-        with self._connection:
+        with self._write():
             self._connection.execute(
                 "INSERT OR REPLACE INTO calibration_profiles VALUES(?,?,?)",
                 (profile.version, profile.to_json(), profile.created_at),
             )
 
+    @consistent_read
     def load_calibration_profile(self, version: str) -> Any | None:
         from .calibration import CalibrationProfile
 
@@ -529,6 +532,7 @@ class SQLiteRepository:
         ).fetchone()
         return CalibrationProfile.from_json(row[0]) if row else None
 
+    @consistent_read
     def find_compatible_profile(
         self, dataset_fingerprint: str, encoder_fingerprint: str, algorithm_version: str
     ) -> Any | None:
