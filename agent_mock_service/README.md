@@ -179,6 +179,13 @@ Repository 的 `get_facts_many` / `get_position_contexts` 是纯读，
 `runtime.materializer.ensure_position_contexts(refs, reason="rebuild")` 是显式物化入口。
 唯一 Exact Match 仍绕过模型；非 Exact Match 仅为 Lane 目标与 Reranker 保留的 Position 准备静态 Context。
 
-开发验证：`python -m pytest`，`ruff check agent_mock_service tests benchmarks`，
-`ruff format --check agent_mock_service tests benchmarks`。
+开发验证：
+```
+cd agent_mock_service
+
+python -m pytest
+
+ruff check src tests benchmarks
+ruff format --check src tests benchmarks
+```
 性能脚本：`python benchmarks/materialization.py`；基线对照：`python benchmarks/compare_baseline.py`。
