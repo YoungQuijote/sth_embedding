@@ -33,9 +33,9 @@
 
 **接口变更**: 记录发生了变化的功能接口
 约定如下记录符号：
-`+ fn(args); <fn功能简述>`: 新增功能为<fn功能简述>的功能接口fn ;
-`- fn(args)`: 删除功能接口fn ;
-`fnA(argsA) > fnB(argsB)`: 功能接口fnA变更为了功能接口fnB，该记录一般用于表示同功能(或同性质)的接口发生了移动、归属变更或参数变更 ;
+`+ package.module.fn(args); <fn功能简述>`: 新增功能为<fn功能简述>的功能接口package.module.fn ;
+`- package.module.fn(args)`: 删除功能接口fn ;
+`packageA.moduleA.fnA(argsA) > packageB.moduleB.fnB(argsB)`: 功能接口 packageA.moduleA.fnA 变更为了功能接口 packageB.moduleB.fnB；该记录一般用于表示同功能(或同性质)的接口发生了移动、归属变更或参数变更 
 
 (写完后，用`\n + --- + \n`和下一段分隔)
 
@@ -51,6 +51,6 @@
 
 **代码变更**: null
 
-**文件变更**: null
+**接口变更**: null
 
 ---
