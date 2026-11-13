@@ -34,7 +34,7 @@
 
 异常处理和恢复策略
 
-## Permissisons
+## Permissions
 
 本次需求开发中允许的操作权限
 
