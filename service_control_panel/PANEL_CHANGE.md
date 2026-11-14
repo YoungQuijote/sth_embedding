@@ -54,3 +54,67 @@
 **接口变更**: null
 
 ---
+
+### 需求标题: 实现内置监控与远程部署管理控制台 V1
+
+**需求文档**: /service_control_panel/requirements/PANEL_REQUIREMENT_001.md
+
+**解决方案**: 增加独立 Python 后端和 TypeScript 前端，提供 Linux 裸机/Docker/指定节点 K8s 部署、实例健康与重启、接口发现和试调、内置监控与告警、日志/数据库/trace 查看及回流。mock 管理接口以已推送的 MOCK_REQUIREMENT_001 为契约，等待真实联调。
+
+**交付文档**: /service_control_panel/deliveries/PANEL_DELIVERY_001.md
+
+**变更时间**: 20261115
+
+**代码变更**:
+
+/service_control_panel/README.md +80/-2
++ /service_control_panel/.dockerignore
++ /service_control_panel/.gitignore
++ /service_control_panel/Dockerfile
++ /service_control_panel/backend/pyproject.toml
++ /service_control_panel/backend/src/svc_panel/__init__.py
++ /service_control_panel/backend/src/svc_panel/app.py
++ /service_control_panel/backend/src/svc_panel/deploy.py
++ /service_control_panel/backend/src/svc_panel/models.py
++ /service_control_panel/backend/src/svc_panel/monitoring.py
++ /service_control_panel/backend/src/svc_panel/remote.py
++ /service_control_panel/backend/src/svc_panel/service.py
++ /service_control_panel/backend/src/svc_panel/store.py
++ /service_control_panel/backend/tests/contract_server.py
++ /service_control_panel/backend/tests/preview_server.py
++ /service_control_panel/backend/tests/test_deployment.py
++ /service_control_panel/backend/tests/test_monitoring.py
++ /service_control_panel/backend/tests/test_panel.py
++ /service_control_panel/backend/uv.lock
++ /service_control_panel/compose.yml
++ /service_control_panel/deliveries/PANEL_DELIVERY_001.md
++ /service_control_panel/frontend/e2e/panel.spec.ts
++ /service_control_panel/frontend/index.html
++ /service_control_panel/frontend/package-lock.json
++ /service_control_panel/frontend/package.json
++ /service_control_panel/frontend/playwright.config.ts
++ /service_control_panel/frontend/src/api.ts
++ /service_control_panel/frontend/src/components/ConsoleDrawer.tsx
++ /service_control_panel/frontend/src/components/DataDrawer.tsx
++ /service_control_panel/frontend/src/components/DeployDialog.tsx
++ /service_control_panel/frontend/src/components/EnvironmentDialog.tsx
++ /service_control_panel/frontend/src/components/common.tsx
++ /service_control_panel/frontend/src/labels.ts
++ /service_control_panel/frontend/src/main.tsx
++ /service_control_panel/frontend/src/style.css
++ /service_control_panel/frontend/tsconfig.json
++ /service_control_panel/frontend/vite.config.ts
++ /service_control_panel/requirements/PANEL_REQUIREMENT_001.md
+
+**接口变更**:
+
++ svc_panel.app.create_app(data_dir, admin_token, background); 创建控制台API及同源前端应用
++ svc_panel.remote.SSH; SSH指纹校验、命令执行与SFTP上传
++ svc_panel.remote.api_client(instance, environment, store, timeout); 直连或SSH隧道访问实例管理API
++ svc_panel.deploy.Deployer.run(instance, restart); 按部署方式执行生命周期操作
++ svc_panel.monitoring.MonitoringProvider.summary(instance_id, minutes, endpoint, method); 监控数据源扩展协议
++ /api/environments、/api/artifacts、/api/instances、/api/jobs、/api/monitoring、/api/alerts; 管理REST接口
++ /api/instances/{id}/console、/logs、/requests、/database、/exports; 实例诊断与回流接口
++ /api/downloads/{id}/ticket、/api/files/{ticket}; 认证签发的短时一次性文件下载
+
+---

@@ -1,0 +1,11 @@
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
+backend/.venv/
+backend/.panel/
+.panel/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
