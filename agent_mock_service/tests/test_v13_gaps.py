@@ -4,9 +4,9 @@ import sqlite3
 
 import pytest
 
-from agent_mock_service.src.agent_mock_service.mock_core.calibration import CalibratedDistribution, CalibrationProfile
-from agent_mock_service.src.agent_mock_service.mock_core.defaults import HashingEncoder
-from agent_mock_service.src.agent_mock_service.mock_core.domain import (
+from agent_mock_service.mock_core.calibration import CalibratedDistribution, CalibrationProfile
+from agent_mock_service.mock_core.defaults import HashingEncoder
+from agent_mock_service.mock_core.domain import (
     ContextRecallCandidate,
     FeatureRelation,
     FeatureSet,
@@ -20,10 +20,10 @@ from agent_mock_service.src.agent_mock_service.mock_core.domain import (
     RequestAffinityInfo,
     ScenarioHypothesisState,
 )
-from agent_mock_service.src.agent_mock_service.mock_core.plugin import BusinessPlugin, BusinessPluginRegistry
-from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
-from agent_mock_service.src.agent_mock_service.mock_core.runtime import AgentMockRuntime
-from agent_mock_service.src.agent_mock_service.mock_core.scoring import (
+from agent_mock_service.mock_core.plugin import BusinessPlugin, BusinessPluginRegistry
+from agent_mock_service.mock_core.repository import SQLiteRepository
+from agent_mock_service.mock_core.runtime import AgentMockRuntime
+from agent_mock_service.mock_core.scoring import (
     BayesEvidenceBuilder,
     BayesPositionScorer,
     calibrated_llr,

@@ -4,15 +4,15 @@ import sqlite3
 
 import pytest
 
-from agent_mock_service.src.agent_mock_service.mock_core.context import ScenarioContextBuilder
-from agent_mock_service.src.agent_mock_service.mock_core.defaults import (
+from agent_mock_service.mock_core.context import ScenarioContextBuilder
+from agent_mock_service.mock_core.defaults import (
     DefaultFeatureComparator,
     HashingEncoder,
     JoiningContextFusionProvider,
 )
-from agent_mock_service.src.agent_mock_service.mock_core.domain import FeatureSet, MockSample, RequestAffinityInfo
-from agent_mock_service.src.agent_mock_service.mock_core.recall import SemanticRecaller
-from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository, compute_sample_hash
+from agent_mock_service.mock_core.domain import FeatureSet, MockSample, RequestAffinityInfo
+from agent_mock_service.mock_core.recall import SemanticRecaller
+from agent_mock_service.mock_core.repository import SQLiteRepository, compute_sample_hash
 
 
 def sample(

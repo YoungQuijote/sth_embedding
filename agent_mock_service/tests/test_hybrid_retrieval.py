@@ -7,16 +7,16 @@ from dataclasses import replace
 
 import pytest
 
-from agent_mock_service.src.agent_mock_service.mock_core.bm25 import BM25Recaller, DefaultTokenizer
-from agent_mock_service.src.agent_mock_service.mock_core.calibration import (
+from agent_mock_service.mock_core.bm25 import BM25Recaller, DefaultTokenizer
+from agent_mock_service.mock_core.calibration import (
     CalibratedDistribution,
     CalibrationBootstrapper,
     CalibrationConfig,
     CalibrationProfile,
 )
-from agent_mock_service.src.agent_mock_service.mock_core.config import RuntimeConfig
-from agent_mock_service.src.agent_mock_service.mock_core.defaults import HashingEncoder
-from agent_mock_service.src.agent_mock_service.mock_core.domain import (
+from agent_mock_service.mock_core.config import RuntimeConfig
+from agent_mock_service.mock_core.defaults import HashingEncoder
+from agent_mock_service.mock_core.domain import (
     BM25RecallCandidate,
     CalibrationSample,
     ContextRecallCandidate,
@@ -32,12 +32,12 @@ from agent_mock_service.src.agent_mock_service.mock_core.domain import (
     RecallCandidate,
     RecallFusionMode,
 )
-from agent_mock_service.src.agent_mock_service.mock_core.execution import ExecutionResourcePool
-from agent_mock_service.src.agent_mock_service.mock_core.recall import fuse_recall_candidates
-from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
-from agent_mock_service.src.agent_mock_service.mock_core.reranker import BiEncoderReranker, CrossEncoderReranker
-from agent_mock_service.src.agent_mock_service.mock_core.runtime import AgentMockRuntime
-from agent_mock_service.src.agent_mock_service.mock_core.scoring import BayesPositionScorer
+from agent_mock_service.mock_core.execution import ExecutionResourcePool
+from agent_mock_service.mock_core.recall import fuse_recall_candidates
+from agent_mock_service.mock_core.repository import SQLiteRepository
+from agent_mock_service.mock_core.reranker import BiEncoderReranker, CrossEncoderReranker
+from agent_mock_service.mock_core.runtime import AgentMockRuntime
+from agent_mock_service.mock_core.scoring import BayesPositionScorer
 
 
 class WhitespaceTokenizer:

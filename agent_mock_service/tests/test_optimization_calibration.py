@@ -1,14 +1,14 @@
 from dataclasses import replace
 
 from agent_mock_service import AgentMockRuntime, RuntimeConfig
-from agent_mock_service.src.agent_mock_service.mock_core.calibration import (
+from agent_mock_service.mock_core.calibration import (
     CalibrationBootstrapper,
     CalibrationConfig,
     StaticCalibrationCorpusProvider,
 )
-from agent_mock_service.src.agent_mock_service.mock_core.defaults import DefaultFeatureComparator, HashingEncoder
-from agent_mock_service.src.agent_mock_service.mock_core.domain import CalibrationSample, FeatureSet
-from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
+from agent_mock_service.mock_core.defaults import DefaultFeatureComparator, HashingEncoder
+from agent_mock_service.mock_core.domain import CalibrationSample, FeatureSet
+from agent_mock_service.mock_core.repository import SQLiteRepository
 
 
 def test_calibration_ignores_disabled_features_tokenizer_and_runtime_weights(tmp_path):

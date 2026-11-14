@@ -7,9 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from agent_mock_service.src.agent_mock_service.mock_core.context import ScenarioContextBuilder
-from agent_mock_service.src.agent_mock_service.mock_core.defaults import HashingEncoder
-from agent_mock_service.src.agent_mock_service.mock_core.domain import (
+from agent_mock_service.mock_core.context import ScenarioContextBuilder
+from agent_mock_service.mock_core.defaults import HashingEncoder
+from agent_mock_service.mock_core.domain import (
     FeatureSet,
     InvokeAvailability,
     MockSample,
@@ -18,8 +18,8 @@ from agent_mock_service.src.agent_mock_service.mock_core.domain import (
     ScenarioContext,
     ScenarioPosition,
 )
-from agent_mock_service.src.agent_mock_service.mock_core.execution import ExecutionResourcePool
-from agent_mock_service.src.agent_mock_service.mock_core.scoring import BayesPositionScorer, availability_prior
+from agent_mock_service.mock_core.execution import ExecutionResourcePool
+from agent_mock_service.mock_core.scoring import BayesPositionScorer, availability_prior
 
 
 class ConcurrencyProbe:
