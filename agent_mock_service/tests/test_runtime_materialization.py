@@ -2,15 +2,15 @@ import time
 from dataclasses import replace
 
 from agent_mock_service import AgentMockRuntime, MockRequest, MockSample, PositionRef, RuntimeConfig
-from agent_mock_service.src.mock_core.defaults import JoiningContextFusionProvider
-from agent_mock_service.src.mock_core.domain import (
+from agent_mock_service.src.agent_mock_service.mock_core.defaults import JoiningContextFusionProvider
+from agent_mock_service.src.agent_mock_service.mock_core.domain import (
     JudgeResult,
     LaneRuntimeState,
     MatchDecision,
     RecallFusionMode,
     ScenarioHypothesisState,
 )
-from agent_mock_service.src.mock_core.repository import SQLiteRepository
+from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
 
 
 class Fusion(JoiningContextFusionProvider):

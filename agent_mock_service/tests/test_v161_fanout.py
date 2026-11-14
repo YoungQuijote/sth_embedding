@@ -5,9 +5,9 @@ import time
 
 import pytest
 
-from agent_mock_service.src.mock_core.context import ScenarioContextBuilder
-from agent_mock_service.src.mock_core.defaults import HashingEncoder
-from agent_mock_service.src.mock_core.domain import (
+from agent_mock_service.src.agent_mock_service.mock_core.context import ScenarioContextBuilder
+from agent_mock_service.src.agent_mock_service.mock_core.defaults import HashingEncoder
+from agent_mock_service.src.agent_mock_service.mock_core.domain import (
     FeatureSet,
     LaneRuntimeState,
     MockSample,
@@ -18,9 +18,9 @@ from agent_mock_service.src.mock_core.domain import (
     ScenarioHypothesisState,
     ScenarioPosition,
 )
-from agent_mock_service.src.mock_core.execution import ExecutionResourcePool
-from agent_mock_service.src.mock_core.recall import LaneContextRecaller
-from agent_mock_service.src.mock_core.repository import SQLiteRepository
+from agent_mock_service.src.agent_mock_service.mock_core.execution import ExecutionResourcePool
+from agent_mock_service.src.agent_mock_service.mock_core.recall import LaneContextRecaller
+from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
 
 
 class TrackingFusion:

@@ -8,7 +8,7 @@ AgentMockService 是一个**确定性的 Stateful Agentic-RAG Mock Runtime**。�
 
 ```python
 from agent_mock_service import AgentMockRuntime, MockRequest, MockSample
-from agent_mock_service.src.mock_core.repository import SQLiteRepository
+from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
 
 repository = SQLiteRepository("agent-mocks.db")
 repository.register(MockSample("/weather", "罗马未来七天天气", "晴到多云", "trip-1", 1, 1))

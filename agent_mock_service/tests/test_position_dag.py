@@ -2,9 +2,9 @@ import sqlite3
 
 import pytest
 
-from agent_mock_service.src.mock_core.dag import DependencyError, resolve_context
-from agent_mock_service.src.mock_core.domain import MockSample, PositionRef
-from agent_mock_service.src.mock_core.repository import SQLiteRepository
+from agent_mock_service.src.agent_mock_service.mock_core.dag import DependencyError, resolve_context
+from agent_mock_service.src.agent_mock_service.mock_core.domain import MockSample, PositionRef
+from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
 
 
 def sample(s="s", p=1, r=1, sources=None, answer="answer"):

@@ -4,20 +4,20 @@ import inspect
 
 import pytest
 
-from agent_mock_service.src.mock_core.api import create_fastapi_app
-from agent_mock_service.src.mock_core.calibration import (
+from agent_mock_service.src.agent_mock_service.mock_core.api import create_fastapi_app
+from agent_mock_service.src.agent_mock_service.mock_core.calibration import (
     CalibratedDistribution,
     CalibrationBootstrapper,
     CalibrationProfile,
     StaticCalibrationCorpusProvider,
 )
-from agent_mock_service.src.mock_core.context import ScenarioContextBuilder
-from agent_mock_service.src.mock_core.defaults import (
+from agent_mock_service.src.agent_mock_service.mock_core.context import ScenarioContextBuilder
+from agent_mock_service.src.agent_mock_service.mock_core.defaults import (
     DefaultFeatureComparator,
     HashingEncoder,
     JoiningContextFusionProvider,
 )
-from agent_mock_service.src.mock_core.domain import (
+from agent_mock_service.src.agent_mock_service.mock_core.domain import (
     CalibrationSample,
     FeatureSet,
     LocalRecallCandidate,
@@ -25,10 +25,10 @@ from agent_mock_service.src.mock_core.domain import (
     RequestAffinityInfo,
     RuntimeInteraction,
 )
-from agent_mock_service.src.mock_core.lane import LaneManager
-from agent_mock_service.src.mock_core.repository import SQLiteRepository
-from agent_mock_service.src.mock_core.runtime import AgentMockRuntime
-from agent_mock_service.src.mock_core.scoring import BayesEvidenceBuilder, BayesPositionScorer
+from agent_mock_service.src.agent_mock_service.mock_core.lane import LaneManager
+from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
+from agent_mock_service.src.agent_mock_service.mock_core.runtime import AgentMockRuntime
+from agent_mock_service.src.agent_mock_service.mock_core.scoring import BayesEvidenceBuilder, BayesPositionScorer
 
 
 class CountingEncoder(HashingEncoder):

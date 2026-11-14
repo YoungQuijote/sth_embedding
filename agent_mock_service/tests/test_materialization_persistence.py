@@ -5,11 +5,11 @@ from dataclasses import replace
 import pytest
 
 from agent_mock_service import AgentMockRuntime, MockSample, PositionRef
-from agent_mock_service.src.mock_core.context import ScenarioContextBuilder
-from agent_mock_service.src.mock_core.dag import resolve_context
-from agent_mock_service.src.mock_core.defaults import HashingEncoder, JoiningContextFusionProvider
-from agent_mock_service.src.mock_core.execution import ExecutionResourcePool
-from agent_mock_service.src.mock_core.repository import SQLiteRepository
+from agent_mock_service.src.agent_mock_service.mock_core.context import ScenarioContextBuilder
+from agent_mock_service.src.agent_mock_service.mock_core.dag import resolve_context
+from agent_mock_service.src.agent_mock_service.mock_core.defaults import HashingEncoder, JoiningContextFusionProvider
+from agent_mock_service.src.agent_mock_service.mock_core.execution import ExecutionResourcePool
+from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
 
 
 class Encoder(HashingEncoder):
@@ -233,7 +233,7 @@ def test_independent_process_restores_persisted_context_and_vectors(tmp_path):
     facts(repo)
     bind(repo)
     ensure(repo)
-    from agent_mock_service.src.mock_core.derived import DerivedStore
+    from agent_mock_service.src.agent_mock_service.mock_core.derived import DerivedStore
 
     DerivedStore(repo).document_vectors(repo.list_all(), repo.context_builder.encoder)
     repo.close()
@@ -270,12 +270,12 @@ print('persisted hit without model calls')
 
 def test_target_plugin_fingerprint_only_not_ancestor_or_registry_revision(tmp_path):
     from agent_mock_service import BusinessPlugin, BusinessPluginRegistry
-    from agent_mock_service.src.mock_core.defaults import (
+    from agent_mock_service.src.agent_mock_service.mock_core.defaults import (
         DefaultFeatureComparator,
         DefaultQueryParser,
         EmptyFeatureExtractor,
     )
-    from agent_mock_service.src.mock_core.judge import FakeJudge
+    from agent_mock_service.src.agent_mock_service.mock_core.judge import FakeJudge
 
     repo = SQLiteRepository(tmp_path / "x.db")
     facts(repo)

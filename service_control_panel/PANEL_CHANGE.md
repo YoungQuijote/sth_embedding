@@ -16,8 +16,8 @@
 **解决方案**: 简述语义级别的解决方案，例如：新增deploy模块，并提供前端一键部署功能；优化UI排版；etc.
 
 **交付文档**: 填写`详细的变更说明/交付文档`所在路径
-约定将`详细文档`记录在/service_control_panel/solutions目录下，
-`详细文档`的命名格式为`PANEL_SOLUTION_XXX.md`，其中PANEL_SOLUTION_为固定前缀，如果有对应的需求文档，则XXX与对应需求文档的编号一致；
+约定将`详细文档`记录在/service_control_panel/deliveries目录下，
+`详细文档`的命名格式为`PANEL_DELIVERY_XXX.md`，其中PANEL_DELIVERY_为固定前缀，如果有对应的需求文档，则XXX与对应需求文档的编号一致；
 如果没有对应的需求文档或对应需求文档没有编号，则XXX为`yyyyMMddHHmm`的(UTC+8)时间字符串，例如`202611130600`；时间以你追加变更记录前调用的时间工具所给时间为准
 
 **变更时间**: 提交代码的日期(yyyyMMdd)
@@ -43,11 +43,11 @@
 
 ### 需求标题: 变更填写示例
 
-**需求文档**：/PANEL_SOLUTION/requirements/PANEL_REQUIREMENT_000.md
+**需求文档**：/service_contol_panel/requirements/PANEL_REQUIREMENT_000.md
 
 **解决方案**: 追加了一段变更记录，示例变更记录如何填写
 
-**交付文档**: /PANEL_SOLUTION/solutions/PANEL_SOLUTION_000.md
+**交付文档**: /service_contol_panel/deliveries/PANEL_DELIVERY_000.md
 
 **代码变更**: null
 

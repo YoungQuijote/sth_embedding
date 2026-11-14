@@ -25,12 +25,16 @@ target-version = "py311"
 #[tool.setuptools.packages.find]
 #include = ["agent_mock_service*"]
 
-[tool.setuptools]
+#[tool.setuptools]
+#
+#package-dir = { "agent_mock_service" = "." }
+#
+#packages = [
+#    "agent_mock_service",
+#    "agent_mock_service.src",
+#    "agent_mock_service.src.mock_core",
+#]
 
-package-dir = { "agent_mock_service" = "." }
-
-packages = [
-    "agent_mock_service",
-    "agent_mock_service.src",
-    "agent_mock_service.src.mock_core",
-]
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["agent_mock_service*"]
