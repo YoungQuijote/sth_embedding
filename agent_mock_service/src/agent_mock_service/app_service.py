@@ -12,6 +12,25 @@ from loguru import logger
 
 
 mock_service_app = FastAPI()
+app_repository = SQLiteRepository(path="agent-mock.db")
+plugin_registry = BusinessPluginRegistry()
+execution_resource_pool = ExecutionResourcePool()
+
+
+# endpint映射
+ENDPOINT_MAPPING = {}
+
+# 特征提取插件注册
+extracor_route = {}
+
+# bm25分词器注册
+bm25_tokenizer_route = {}
+
+# 任务插件注册
+plugin_registry.register()
+
+# 执行资源注册
+exeution_resource_pool.register()
 
 @mock_service_app.exception_hanlder()
 async def log_validation_error(
