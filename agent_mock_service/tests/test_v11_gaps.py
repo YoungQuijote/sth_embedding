@@ -32,7 +32,7 @@ from agent_mock_service.mock_core.domain import (
 )
 from agent_mock_service.mock_core.lane import LaneManager
 from agent_mock_service.mock_core.repository import SQLiteRepository
-from agent_mock_service.mock_core import sse_event_stream
+from agent_mock_service.mock_core.response import sse_event_stream
 from agent_mock_service.mock_core.runtime import AgentMockRuntime
 from agent_mock_service.mock_core.scoring import ScenarioScoreAggregator
 
