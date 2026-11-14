@@ -8,7 +8,7 @@ AgentMockService 是一个**确定性的 Stateful Agentic-RAG Mock Runtime**。�
 
 ```python
 from agent_mock_service import AgentMockRuntime, MockRequest, MockSample
-from agent_mock_service.src.agent_mock_service.mock_core.repository import SQLiteRepository
+from agent_mock_service.mock_core.repository import SQLiteRepository
 
 repository = SQLiteRepository("agent-mocks.db")
 repository.register(MockSample("/weather", "罗马未来七天天气", "晴到多云", "trip-1", 1, 1))
@@ -189,3 +189,18 @@ ruff check src tests benchmarks
 ruff format --check src tests benchmarks
 ```
 性能脚本：`python benchmarks/materialization.py`；基线对照：`python benchmarks/compare_baseline.py`。
+
+
+## Panel V1 管理与遥测服务
+
+在本项目目录安装 `pip install '.[api]'`，设置 `MOCK_ADMIN_TOKEN` 后启动：
+
+```bash
+python -m uvicorn agent_mock_service.app_service:mock_service_app --host 0.0.0.0 --port 32882
+```
+
+`/health` 公开；`/ready`、`/openapi.json`、`/registry`、`/debug/*`、`/management/v1/*`
+需要管理 Bearer token。注册样本会生成实际业务路由；管理能力包括监控、请求/trace/日志查询、
+数据库只读查看和后台快照导出。遥测代码独立放在 `telemetry`，所有接口挂载到同一 Web app。
+启动配置、业务请求示例、Docker、持久化边界和验证结果见
+[MOCK_DELIVERY_001](deliveries/MOCK_DELIVERY_001.md)。

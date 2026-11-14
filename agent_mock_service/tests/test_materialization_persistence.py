@@ -239,11 +239,11 @@ def test_independent_process_restores_persisted_context_and_vectors(tmp_path):
     repo.close()
     code = """
 import sys
-from agent_mock_service.repository import SQLiteRepository
-from agent_mock_service.context import ScenarioContextBuilder
-from agent_mock_service.defaults import HashingEncoder
-from agent_mock_service.domain import PositionRef
-from agent_mock_service.derived import DerivedStore
+from agent_mock_service.mock_core.repository import SQLiteRepository
+from agent_mock_service.mock_core.context import ScenarioContextBuilder
+from agent_mock_service.mock_core.defaults import HashingEncoder
+from agent_mock_service.mock_core.domain import PositionRef
+from agent_mock_service.mock_core.derived import DerivedStore
 class Encoder(HashingEncoder):
     def encode_document(self, text): raise AssertionError('unexpected encoding')
     def encode_documents(self, texts): raise AssertionError('unexpected document batch')

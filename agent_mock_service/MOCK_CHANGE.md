@@ -54,3 +54,57 @@
 **接口变更**: null
 
 ---
+
+### 需求标题: 实现 Panel V1 管理、观测和文件回流契约
+
+**需求文档**: /agent_mock_service/requirements/MOCK_REQUIREMENT_001.md
+
+**解决方案**: 将占位 Web app 实现为可安装运行的统一 FastAPI 入口；新增 telemetry 适配层承载管理鉴权、HTTP 关联、监控、持久化请求/trace/日志、后台一致性导出和 OpenAPI 响应模型。业务注册生成真实可发现路由，提供 JSON/SSE 与只读调试接口；保留 mock_core 算法独立性。补充 Docker 构建入口，修正目录迁移后两处回归测试导入。
+
+**交付文档**: /agent_mock_service/deliveries/MOCK_DELIVERY_001.md
+
+**变更时间**: 20261115
+
+**代码变更**:
+
+- /agent_mock_service/src/agent_mock_service/app_service.py +465/-55
+- + /agent_mock_service/src/agent_mock_service/telemetry/__init__.py
+- + /agent_mock_service/src/agent_mock_service/telemetry/http.py
+- + /agent_mock_service/src/agent_mock_service/telemetry/store.py
+- + /agent_mock_service/src/agent_mock_service/telemetry/schemas.py
+- + /agent_mock_service/tests/test_panel_v1.py
+- /agent_mock_service/tests/test_materialization_persistence.py +5/-5
+- /agent_mock_service/tests/test_v11_gaps.py +1/-1
+- + /agent_mock_service/Dockerfile
+- + /agent_mock_service/.dockerignore
+- /agent_mock_service/README.md +16/-1
+- + /agent_mock_service/deliveries/MOCK_DELIVERY_001.md
+
+**接口变更**:
+
+- + agent_mock_service.app_service.create_app(); 创建完整 Panel V1 Web app，生命周期治理 Repository、运行时资源和遥测
+- + agent_mock_service.app_service.add_business(app, path); 注册真实业务 HTTP 路由并刷新 OpenAPI
+- + agent_mock_service.telemetry.http.ObservationMiddleware(app, state); 管理鉴权、HTTP 关联、状态计数和流完成观测
+- + agent_mock_service.telemetry.store.Store(data, logs, traces); 持久化、脱敏、分页查询、TraceWriter 适配及后台导出
+- + agent_mock_service.telemetry.store.ServiceLogHandler(store); 捕获服务命名空间日志并关联 request_id
+- agent_mock_service.app_service.health() > GET /health; 补全公开存活检查
+- agent_mock_service.app_service.registry(body) > POST /registry; 补全样本注册与动态业务路由发现
+- agent_mock_service.app_service.debug_embedding(body) > POST /debug/embedding; JSON 请求模型及只读向量调试
+- agent_mock_service.app_service.debug_bm25(body) > POST /debug/bm25; JSON 请求模型及只读 BM25 调试
+- + GET /ready; 受保护的依赖就绪检查
+- + GET /management/v1/info; 协议、身份及能力声明
+- + GET /management/v1/endpoints; 真实接口发现
+- + GET /management/v1/metrics; 本 boot 的 HTTP 单调累计指标
+- + GET /management/v1/requests; 有界筛选分页
+- + GET /management/v1/requests/{request_id}; 脱敏请求详情
+- + GET /management/v1/traces; 有界筛选分页
+- + GET /management/v1/traces/{trace_id}; 原始运行时事件及 HTTP 关联
+- + GET /management/v1/logs; 服务日志有界查看
+- + GET /management/v1/database/tables; 只读表结构发现
+- + GET /management/v1/database/tables/{table}/rows; 受控表的只读分页
+- + POST /management/v1/exports; 创建数据库/日志/trace 导出任务
+- + GET /management/v1/exports/{export_id}; 导出状态及错误
+- + GET /management/v1/exports/{export_id}/download; 认证后的受控二进制下载
+- + GET /openapi.json; 受保护的完整 OpenAPI，含动态业务路径和模型
+
+---
