@@ -8,6 +8,10 @@ from fastapi.responses import StreamingResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 
+from agent_mock_service.mock_core.repository import SQLiteRepository
+from agent_mock_service import *
+from agent_mock_service.business import *
+
 from loguru import logger
 
 
@@ -30,7 +34,7 @@ bm25_tokenizer_route = {}
 plugin_registry.register()
 
 # 执行资源注册
-exeution_resource_pool.register()
+execution_resource_pool.register()
 
 @mock_service_app.exception_hanlder()
 async def log_validation_error(
@@ -57,7 +61,7 @@ def registry(
 def debug_embedding(
   query: str,
   candidates: list[str]
-) -> Respones:
+) -> Response:
   """反射/直接引用内部embedding模块, 暴露其计算接口, 用于调试/回溯QC相似度计算结果"""
   ...
 
