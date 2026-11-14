@@ -1,0 +1,11 @@
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.panel
+**/dist
+**/test-results
+**/playwright-report
+**/*.egg-info
+**/*.tsbuildinfo
