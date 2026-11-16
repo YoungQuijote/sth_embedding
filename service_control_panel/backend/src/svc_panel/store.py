@@ -59,6 +59,22 @@ class Store:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def patch(self, kind, identifier, **changes):
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT value FROM objects WHERE kind=? AND id=?", (kind, identifier)
+            ).fetchone()
+            if row is None:
+                raise ValueError("资源不存在")
+            value = json.loads(row[0])
+            value.update(changes)
+            db.execute(
+                "UPDATE objects SET value=? WHERE kind=? AND id=?",
+                (json.dumps(value), kind, identifier),
+            )
+        return value
+
     def list(self, kind: str) -> list[dict]:
         with self.connection() as db:
             return [

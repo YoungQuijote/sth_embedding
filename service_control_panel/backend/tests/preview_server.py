@@ -1,10 +1,12 @@
 """Disposable browser-test workspace backed by the panel.v1 fixture, no SSH execution."""
 
+import importlib
 import json
 import os
 import tempfile
 import threading
 import time
+from contextlib import nullcontext
 
 import uvicorn
 from contract_server import MOCK_TOKEN
@@ -82,8 +84,13 @@ def main():
         time.sleep(0.3)
 
     Deployer.run = simulate
+    module = importlib.import_module("svc_panel.app")
+    module.SSH = lambda *args: nullcontext(None)
+    module.check_storage = lambda *args: {"available_bytes": 10**12, "required_bytes": 1024}
+    # Use a second loopback alias for a newly deployed instance to exercise URL uniqueness.
+
     thread = threading.Thread(
-        target=lambda: uvicorn.run(mock_app, host="127.0.0.1", port=32883, log_level="warning"),
+        target=lambda: uvicorn.run(mock_app, host="0.0.0.0", port=32883, log_level="warning"),
         daemon=True,
     )
     thread.start()

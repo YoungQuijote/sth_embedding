@@ -11,6 +11,8 @@ export const stateNames: Data = {
   deployed: "已部署",
   failed: "操作失败",
   unknown: "状态待确认",
+  undeploying: "卸载中",
+  undeployed: "已卸载",
 };
 export const categoryNames: Data = {
   business: "业务查询",
@@ -22,6 +24,7 @@ export const jobNames: Data = {
   deploy: "部署实例",
   restart: "重启实例",
   export: "文件回流",
+  undeploy: "卸载实例",
 };
 export const statusNames: Data = {
   queued: "排队中",

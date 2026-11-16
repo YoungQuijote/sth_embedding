@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import json
+import re
 import shlex
 import tarfile
+import time
 from pathlib import Path, PurePosixPath
 
 import yaml
 
+from .deployment_support import (
+    BASE,
+    LABEL,
+    docker_disk_check,
+    docker_run_command,
+    prepare_directory,
+    remote_directory,
+)
 from .remote import SSH
 
 
@@ -23,6 +34,7 @@ def validate_source(path):
             found |= name.name == "pyproject.toml" and len(name.parts) <= 2
         if not found:
             raise ValueError("源码包根目录或单层顶层目录需要包含 pyproject.toml")
+        return total
 
 
 def validate_manifest(path, instance):
@@ -62,20 +74,50 @@ def validate_manifest(path, instance):
 
 
 class Deployer:
-    def __init__(self, store, log):
+    def __init__(self, store, log, progress=None):
         self.store = store
         self.log = log
+        self.progress = progress or (lambda **kwargs: None)
+
+    def command(self, ssh, label, script, timeout=900):
+        self.log(label)
+        started = time.monotonic()
+        self.progress(stage=label, stage_started_at=time.time())
+        result = ssh.run(script, timeout=timeout)
+        self.log(f"{label}完成，耗时 {time.monotonic() - started:.1f} 秒")
+        return result
+
+    def transfer(self, ssh, artifact, destination):
+        started, last = time.monotonic(), [0.0]
+        self.log("Panel → 远端：" + artifact["filename"])
+
+        def report(sent, total):
+            now = time.monotonic()
+            if now - last[0] >= 1 or sent == total:
+                elapsed = max(0.001, now - started)
+                self.progress(
+                    stage="Panel → 远端传输",
+                    transferred_bytes=sent,
+                    total_bytes=total,
+                    elapsed_seconds=elapsed,
+                    rate_bytes_second=sent / elapsed,
+                )
+                last[0] = now
+
+        ssh.upload(artifact["path"], destination, callback=report)
+        self.log(f"远端传输完成，耗时 {time.monotonic() - started:.1f} 秒")
 
     def run(self, instance, restart=False):
         env = self.store.get("environment", instance["environment_id"])
         artifact = self.store.get("artifact", instance["artifact_id"])
         mode = instance["mode"]
-        directory = "/opt/svc-panel/" + instance["id"]
+        directory = remote_directory(instance)
         name = "mock-" + instance["id"]
         q = shlex.quote
+        self.log("连接 SSH 环境")
         with SSH(env, self.store) as ssh:
             self.log("检查 Linux、操作权限和运行环境")
-            base = 'set -euo pipefail\n[ "$(uname -s)" = Linux ] || { echo "仅支持 Linux"; exit 1; }\nSUDO=""; if [ "$(id -u)" != 0 ]; then sudo -n true; SUDO="sudo -n"; fi\n'
+            base = BASE
             preflight = {
                 "bare": 'command -v systemctl >/dev/null; test -d /run/systemd/system; PY=$(command -v python3 || command -v python || true); test -n "$PY" || { echo \'缺少 Python\'; exit 1; }; "$PY" -c \'import sys; assert sys.version_info >= (3,11), "需要 Python >=3.11"\'',
                 "docker": "$SUDO docker info >/dev/null",
@@ -88,7 +130,16 @@ class Deployer:
                 self.log("执行重启")
                 command = {
                     "bare": "$SUDO systemctl restart " + q(name),
-                    "docker": "$SUDO docker restart " + q(name),
+                    "docker": "$SUDO docker update --restart "
+                    + q(
+                        "no"
+                        if instance.get("docker", {}).get("max_restarts", 3) == 0
+                        else "on-failure:" + str(instance.get("docker", {}).get("max_restarts", 3))
+                    )
+                    + " "
+                    + q(name)
+                    + "; $SUDO docker restart "
+                    + q(name),
                     "k8s": "kubectl -n "
                     + q(instance["namespace"])
                     + " rollout restart deployment/"
@@ -102,45 +153,55 @@ class Deployer:
                 ssh.run(base + command, timeout=240)
                 return
             if mode == "bare":
-                validate_source(artifact["path"])
+                artifact["expanded_bytes"] = validate_source(artifact["path"])
             if mode == "k8s":
                 manifest = self.store.get("artifact", instance["manifest_id"])
-                validate_manifest(manifest["path"], instance)
+                documents = validate_manifest(manifest["path"], instance)
                 # Loading a local archive must happen on the selected cluster node.
                 node = q(instance["node"])
                 ssh.run(
                     base
-                    + "kubectl get node "
-                    + node
-                    + " -o json > /tmp/svc-panel-node-"
-                    + instance["id"]
-                    + ".json\n"
                     + "NODE_IPS=$(kubectl get node "
                     + node
                     + ' -o jsonpath=\'{.status.addresses[?(@.type=="InternalIP")].address}\'); LOCAL_IPS=$(hostname -I); FOUND=0; for ip in $NODE_IPS; do for local_ip in $LOCAL_IPS; do [ "$ip" != "$local_ip" ] || FOUND=1; done; done; [ $FOUND = 1 ] || { echo \'SSH 目标必须是指定的 K8s 节点\'; exit 1; }',
                     timeout=60,
                 )
-            ssh.run(
-                base
-                + "$SUDO mkdir -p "
-                + q(directory)
-                + "; $SUDO chown $(id -u):$(id -g) "
-                + q(directory)
-                + "; chmod 700 "
-                + q(directory)
-            )
-            self.log("上传部署文件：" + artifact["filename"])
-            ssh.upload(artifact["path"], directory + "/artifact.tar")
+            self.log("检查远端目录权限与空间")
+            directory = prepare_directory(ssh, instance, artifact, self.store)
+            if mode == "docker":
+                docker_disk_check(ssh, artifact["size_bytes"])
+            self.transfer(ssh, artifact, directory + "/artifact.tar")
             if mode == "k8s":
-                ssh.upload(manifest["path"], directory + "/deployment.yml")
+                for doc in documents:
+                    doc.setdefault("metadata", {}).setdefault("labels", {})[LABEL] = instance["id"]
+                resources = [
+                    doc["kind"].lower() + "/" + doc["metadata"]["name"] for doc in documents
+                ]
+                ssh.write(directory + "/deployment.yml", yaml.safe_dump_all(documents))
+                existing = ssh.run(
+                    base
+                    + "kubectl get -f "
+                    + q(directory + "/deployment.yml")
+                    + " --ignore-not-found -o name",
+                    timeout=60,
+                )
+                if existing.strip():
+                    raise ValueError(
+                        "清单包含已存在资源，请使用接入已有实例，避免覆盖资源：" + existing
+                    )
+                self.store.patch("instance", instance["id"], k8s_resources=resources)
+
                 loader = {
                     "docker": "$SUDO docker load -i ",
                     "containerd": "$SUDO ctr -n k8s.io images import ",
                     "k3s": "$SUDO k3s ctr -n k8s.io images import ",
                 }[instance["image_loader"]]
-                self.log("加载节点镜像并应用用户清单")
-                ssh.run(base + loader + q(directory + "/artifact.tar"), timeout=900)
-                ssh.run(
+                self.command(
+                    ssh, "加载节点镜像", base + loader + q(directory + "/artifact.tar"), timeout=900
+                )
+                self.command(
+                    ssh,
+                    "应用 K8s 清单并等待就绪",
                     base
                     + "kubectl apply -f "
                     + q(directory + "/deployment.yml")
@@ -171,13 +232,19 @@ class Deployer:
                     MOCK_LOG_DIR="/svc/logs",
                     MOCK_TRACE_DIR="/svc/traces",
                 )
+            if instance.get("docker_environment"):
+                variables.update(json.loads(self.store.unseal(instance["docker_environment"])))
             ssh.write(
                 directory + "/service.env",
                 "\n".join(f"{k}={v}" for k, v in variables.items()) + "\n",
             )
             if mode == "docker":
-                self.log("加载 Docker 镜像")
-                output = ssh.run(base + "$SUDO docker load -i " + q(directory + "/artifact.tar"))
+                docker_disk_check(ssh, artifact["size_bytes"])
+                output = self.command(
+                    ssh,
+                    "加载 Docker 镜像",
+                    base + "$SUDO docker load -i " + q(directory + "/artifact.tar"),
+                )
                 images = [
                     line.split(": ", 1)[1].strip()
                     for line in output.splitlines()
@@ -190,24 +257,19 @@ class Deployer:
                     image = images[0]
                 elif image not in images:
                     raise ValueError("指定镜像不在本次加载结果中")
-                self.log("创建容器并绑定持久化目录")
-                volumes = " ".join(
-                    "-v " + q(directory + "/" + p + ":/svc/" + p)
-                    for p in ("data", "logs", "traces")
+                output = self.command(
+                    ssh, "创建并启动容器", docker_run_command(instance, image, directory)
                 )
-                ssh.run(
-                    base
-                    + "$SUDO docker run -d --name "
-                    + q(name)
-                    + " --restart unless-stopped --env-file "
-                    + q(directory + "/service.env")
-                    + " -p "
-                    + q(str(instance["port"]) + ":32882")
-                    + " "
-                    + volumes
-                    + " --entrypoint python "
-                    + q(image)
-                    + " -m uvicorn agent_mock_service.app_service:mock_service_app --host 0.0.0.0 --port 32882"
+                identifiers = [
+                    line.strip()
+                    for line in output.splitlines()
+                    if re.fullmatch(r"[a-f0-9]{64}", line.strip())
+                ]
+                if len(identifiers) != 1:
+                    raise RuntimeError("容器已提交启动但未返回唯一 ID，请检查远端状态：" + output)
+                container_id = identifiers[0]
+                self.store.patch(
+                    "instance", instance["id"], container_id=container_id, loaded_image=image
                 )
             else:
                 self.log("解包源码，选择 conda / venv / 系统 Python 并安装依赖")
@@ -245,13 +307,13 @@ printf '%s' "$PY" > python-path
 printf '%s' "$INSTALL_MODE" > install-mode
 """
                 )
-                ssh.run(setup, timeout=1800)
+                self.command(ssh, "安装 Python 环境及依赖", setup, timeout=1800)
                 python = ssh.run("cat " + q(directory + "/python-path")).strip()
                 install_mode = ssh.run("cat " + q(directory + "/install-mode")).strip()
                 self.log("Python 安装方式：" + install_mode)
                 instance["python_environment"] = install_mode
-                self.store.put("instance", instance)
-                unit = f"[Unit]\nDescription=Mock service {instance['id']}\nAfter=network.target\n[Service]\nType=simple\nUser={env['username']}\nWorkingDirectory={directory}\nEnvironmentFile={directory}/service.env\nExecStart={python} -m uvicorn agent_mock_service.app_service:mock_service_app --host 0.0.0.0 --port {instance['port']}\nRestart=on-failure\nRestartSec=3\n[Install]\nWantedBy=multi-user.target\n"
+                self.store.patch("instance", instance["id"], python_environment=install_mode)
+                unit = f"""[Unit]\nDescription=Mock service {instance["id"]}\nAfter=network.target\nStartLimitIntervalSec=120\nStartLimitBurst=3\n[Service]\nType=simple\nUser={env["username"]}\nWorkingDirectory={directory}\nEnvironmentFile="{directory}/service.env"\nExecStart="{python}" -m uvicorn agent_mock_service.app_service:mock_service_app --host 0.0.0.0 --port {instance["port"]}\nRestart=on-failure\nRestartSec=3\n[Install]\nWantedBy=multi-user.target\n"""
                 ssh.write(directory + "/service.unit", unit)
                 self.log("注册并启动 systemd 服务")
                 ssh.run(

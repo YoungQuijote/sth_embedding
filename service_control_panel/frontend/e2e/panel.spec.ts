@@ -112,7 +112,7 @@ test("deployment form, disabled extensions and background task", async ({
   await dialog.getByLabel("暴露端口", { exact: true }).fill("32999");
   await dialog
     .getByLabel("服务访问地址", { exact: true })
-    .fill("http://127.0.0.1:32883");
+    .fill("http://localhost:32883");
   await dialog
     .getByLabel("Mock 管理令牌", { exact: true })
     .fill("contract-mock-token-123456789");
@@ -153,11 +153,85 @@ test("mobile layout and environment form", async ({ page }) => {
   await page.getByLabel("SSH 主机", { exact: true }).fill("127.0.0.1");
   await page.getByLabel("SSH 用户", { exact: true }).fill("tester");
   await page.getByLabel("密码", { exact: true }).fill("not-a-real-secret");
-  await page
-    .getByLabel("可信主机 SHA256 指纹", { exact: true })
-    .fill("SHA256:" + "b".repeat(43));
+  await expect(
+    page.getByLabel("可信主机 SHA256 指纹（可选）", { exact: true }),
+  ).not.toHaveAttribute("required");
   await page.getByRole("button", { name: "保存环境" }).click();
   await expect(
     page.getByRole("heading", { name: "Browser environment" }),
   ).toBeVisible();
+});
+
+test("attach existing service and remove monitoring without a deployment", async ({
+  page,
+}) => {
+  await page
+    .locator(".page-heading")
+    .getByRole("button", { name: "新增实例", exact: true })
+    .click();
+  await page.getByRole("button", { name: "监测已有实例", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "监测已有实例" });
+  await dialog.getByLabel("实例名称", { exact: true }).fill("External service");
+  await dialog
+    .getByLabel("服务访问地址", { exact: true })
+    .fill("http://127.0.0.2:32883");
+  await dialog
+    .getByLabel("Mock 管理令牌", { exact: true })
+    .fill("contract-mock-token-123456789");
+  await dialog.getByRole("button", { name: "验证并接入" }).click();
+  const card = page
+    .locator(".instance-card")
+    .filter({ hasText: "External service" });
+  await expect(card).toBeVisible();
+  await expect(card.getByTitle("重启实例")).toBeDisabled();
+  await card.getByTitle("更多操作").click();
+  await expect(
+    card.getByRole("button", { name: "卸载实例", exact: true }),
+  ).toBeDisabled();
+  await card.getByRole("button", { name: "移除监测", exact: true }).click();
+  await page.getByRole("button", { name: "确认移除监测" }).click();
+  await expect(card).toHaveCount(0);
+});
+
+test("Docker advanced parameters and uninstall confirmation", async ({
+  page,
+}) => {
+  await page
+    .locator(".page-heading")
+    .getByRole("button", { name: "新增实例", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "部署一个新实例" });
+  await dialog.getByRole("button", { name: "Docker 加载镜像" }).click();
+  await expect(dialog.getByLabel("远程部署根目录")).toHaveValue(
+    "/opt/svc-panel",
+  );
+  await expect(dialog.getByLabel("失败最多重启次数")).toHaveValue("3");
+  await dialog.getByLabel("启动方式", { exact: true }).selectOption("custom");
+  await expect(
+    dialog.getByLabel("ENTRYPOINT（可选，可执行文件路径）"),
+  ).toBeVisible();
+  await dialog
+    .getByText("环境变量、挂载与更多 Docker 参数", { exact: true })
+    .click();
+  await expect(dialog.getByLabel("Docker 参数（JSON 数组）")).toBeVisible();
+  await page.screenshot({
+    path: "test-results/docker-options.png",
+    fullPage: true,
+  });
+  await dialog.getByLabel("关闭").click();
+  const card = page.locator(".instance-card").filter({ hasText: "Staging" });
+  await card.getByTitle("更多操作").click();
+  await card.getByRole("button", { name: "卸载实例", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "确认卸载", exact: true }),
+  ).toBeDisabled();
+  await page.getByLabel("输入实例名称确认").fill("wrong");
+  await expect(
+    page.getByRole("button", { name: "确认卸载", exact: true }),
+  ).toBeDisabled();
+  await page.getByLabel("输入实例名称确认").fill("Staging · 契约测试");
+  await expect(
+    page.getByRole("button", { name: "确认卸载", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
 });
