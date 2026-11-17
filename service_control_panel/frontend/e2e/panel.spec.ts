@@ -235,3 +235,103 @@ test("Docker advanced parameters and uninstall confirmation", async ({
   ).toBeEnabled();
   await page.getByRole("button", { name: "取消", exact: true }).click();
 });
+
+test("delete an unused environment and explain in-use dependencies", async ({
+  page,
+}) => {
+  const headers = { Authorization: "Bearer browser-test-token-123456789" };
+  const created = await page.request.post("/api/environments", {
+    headers,
+    data: {
+      name: "Environment to delete",
+      host: "127.0.0.1",
+      username: "test",
+      password: "disposable-ssh-password",
+    },
+  });
+  expect(created.status()).toBe(201);
+  await page.locator("nav").getByRole("button", { name: "远程环境" }).click();
+  await page.getByTitle("刷新", { exact: true }).click();
+  const card = page
+    .locator(".environment-card")
+    .filter({ hasText: "Environment to delete" });
+  await card.getByRole("button", { name: "删除环境", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除环境", exact: true }).click();
+  await expect(card).toHaveCount(0);
+  const referenced = page
+    .locator(".environment-card")
+    .filter({ hasText: "本地契约测试环境" });
+  await referenced
+    .getByRole("button", { name: "删除环境", exact: true })
+    .click();
+  await page.getByRole("button", { name: "确认删除环境", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "删除远程环境" }).getByRole("alert"),
+  ).toContainText("环境仍被实例或未完成任务使用");
+  await expect(
+    page.getByRole("dialog", { name: "删除远程环境" }).getByRole("alert"),
+  ).toContainText("Staging");
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(referenced).toBeVisible();
+});
+
+test("change admin password, reject old credential and sign in again", async ({
+  page,
+}) => {
+  const old = "browser-test-token-123456789",
+    next = "browser-new-password-123456789";
+  let changed = false;
+  try {
+    await page.getByRole("button", { name: "设置与帮助", exact: true }).click();
+    await page
+      .getByRole("button", { name: "修改登录密码", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "修改登录密码" });
+    await dialog
+      .getByLabel("当前密码 / 访问令牌", { exact: true })
+      .fill("wrong-current-password");
+    await dialog.getByLabel("新登录密码", { exact: true }).fill(next);
+    await dialog.getByLabel("再次输入新密码", { exact: true }).fill(next);
+    await dialog.getByRole("button", { name: "保存新密码" }).click();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "当前登录密码或访问令牌不正确",
+    );
+    await dialog.getByLabel("当前密码 / 访问令牌", { exact: true }).fill(old);
+    await dialog.getByRole("button", { name: "保存新密码" }).click();
+    await expect(
+      page.getByRole("heading", { name: "进入服务控制台" }),
+    ).toBeVisible();
+    changed = true;
+    expect(
+      await page.evaluate(() => sessionStorage.getItem("panel-token")),
+    ).toBeNull();
+    expect(
+      (
+        await page.request.get("/api/session", {
+          headers: { Authorization: "Bearer " + old },
+        })
+      ).status(),
+    ).toBe(401);
+    await page.getByLabel("访问令牌", { exact: true }).fill(next);
+    await page.getByRole("button", { name: "进入控制台" }).click();
+    await expect(
+      page.getByRole("heading", { name: "工作空间设置" }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: "test-results/account-settings.png",
+      fullPage: true,
+    });
+  } finally {
+    if (changed) {
+      const restored = await page.request.post("/api/account/password", {
+        headers: { Authorization: "Bearer " + next },
+        data: {
+          current_password: next,
+          new_password: old,
+          confirm_password: old,
+        },
+      });
+      expect(restored.status()).toBe(200);
+    }
+  }
+});

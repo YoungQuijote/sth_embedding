@@ -26,7 +26,7 @@ uv run uvicorn svc_panel.app:create_app --factory --host 127.0.0.1 --port 8000
 | 变量 | 默认 | 用途 |
 | --- | --- | --- |
 | `PANEL_DATA_DIR` | 当前目录 `.panel` | SQLite、加密密钥、上传文件、导出文件 |
-| `PANEL_ADMIN_TOKEN` | 自动生成 | 管理员访问令牌 |
+| `PANEL_ADMIN_TOKEN` | 自动生成 | 首次管理员凭据；页面改密后使用持久化新密码，不再由此变量覆盖 |
 | `PANEL_POLL_INTERVAL` | 30 秒，最小 5 秒 | 每轮实例采集间隔；离线实例会增加整轮耗时 |
 | `PANEL_PACKAGE_LIMIT_BYTES` | 2147483648（2 GiB） | 源码/镜像上传上限 |
 | `PANEL_MANIFEST_LIMIT_BYTES` | 2097152（2 MiB） | YAML 清单上传上限 |
@@ -37,6 +37,17 @@ uv run uvicorn svc_panel.app:create_app --factory --host 127.0.0.1 --port 8000
 构建网络如使用企业代理 CA，可先执行 `docker build --secret id=build_ca,src=/path/to/trusted-ca-bundle.pem -t svc-panel:local .`。证书仅挂载到构建阶段，未关闭 TLS 校验；普通网络无需此参数。
 
 备份时停止 Panel 后整体备份数据目录，必须同时保留 `credentials.key` 和 SQLite；密钥丢失后无法解密 SSH 凭据与 mock 管理令牌。
+
+## 环境删除与管理员改密
+
+- **远程环境 → 环境卡片 → 删除环境**：确认后移除 Panel 保存的连接、加密 SSH 凭据和指纹，不连接远端，不删除远端服务/文件。
+- 环境仍关联可见且未卸载的实例时，返回引用实例名称并阻止删除。请先卸载实例，或仅移除监测。隐藏实例若仍有排队/执行中的任务，也需等待任务结束。已卸载记录及结束的任务历史保留。
+- **设置与帮助 → 修改登录密码**：输入当前密码或原访问令牌、新密码和确认密码。新密码为 16–256 位英文字母、数字或符号，不含空格，可使用密码管理器生成。
+- 保存后退出当前页面；其他页面在下次请求时也必须用新密码登录。旧凭据和已签发的下载票据失效，已开始的请求/后台任务继续，不影响 SSH 和 Mock 管理令牌。登录页原“访问令牌”输入框同样接受新密码。
+- 新密码保存为带随机盐的 scrypt 校验值，**重启后优先于 `PANEL_ADMIN_TOKEN` 和旧 `admin.token`**。旧 bootstrap 文件会尝试删除；即使因文件权限留下，也不再生效。程序依然要求单进程、单 worker。
+- 接口：`DELETE /api/environments/{id}`；`POST /api/account/password`，JSON 字段为 `current_password`、`new_password`、`confirm_password`。当前凭据错误返回 403，字段错误 422；仍需有效 Bearer 认证。
+
+如果遗失新密码，由具有数据目录访问权限的主机管理员停机并备份完整数据目录，然后从 `panel.sqlite` 删除 `objects` 中 `kind='auth' AND id='admin'` 的记录，同时移除旧 `admin.token`；配置新的 `PANEL_ADMIN_TOKEN` 后启动，或清除此环境变量让程序重新生成 `admin.token`。这是离线恢复操作，不能在运行中的 Panel 上直接修改数据库。回退到不支持改密的旧版会忽略新校验记录，需重新配置可信的管理员令牌，不能依赖新密码仍生效。
 
 ## 部署与运行约定
 
