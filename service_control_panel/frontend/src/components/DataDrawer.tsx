@@ -182,6 +182,39 @@ export function DataDrawer({
                 <p>{date(data.created_at)}</p>
                 <code>{data.id}</code>
               </div>
+              {data.progress && (
+                <div className="job-summary">
+                  <strong>{data.progress.stage}</strong>
+                  <p>
+                    本阶段已用{" "}
+                    {Math.max(
+                      0,
+                      (data.finished_at || Date.now() / 1000) -
+                        data.progress.stage_started_at,
+                    ).toFixed(0)}{" "}
+                    秒
+                  </p>
+                  {data.progress.total_bytes > 0 && (
+                    <>
+                      <progress
+                        value={data.progress.transferred_bytes}
+                        max={data.progress.total_bytes}
+                      />
+                      <p>
+                        {(data.progress.transferred_bytes / 1024 ** 2).toFixed(
+                          1,
+                        )}{" "}
+                        / {(data.progress.total_bytes / 1024 ** 2).toFixed(1)}{" "}
+                        MiB ·{" "}
+                        {(data.progress.rate_bytes_second / 1024 ** 2).toFixed(
+                          1,
+                        )}{" "}
+                        MiB/s
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
               <div className="task-log">
                 {data.logs.map((entry: Data, index: number) => (
                   <div key={index}>

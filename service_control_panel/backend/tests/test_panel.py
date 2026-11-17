@@ -218,8 +218,12 @@ def test_reject_unsafe_source_archive(tmp_path, name, link):
 def test_upload_deploy_and_duplicate_port(panel, monkeypatch):
     http, app, existing = panel
     response = http.post(
-        "/api/artifacts?kind=source",
-        files={"file": ("service.tar", source_archive(), "application/x-tar")},
+        "/api/artifacts?kind=source&filename=service.tar",
+        content=source_archive(),
+        headers={
+            "Content-Type": "application/octet-stream",
+            "X-Upload-Size": str(len(source_archive())),
+        },
     )
     assert response.status_code == 201
     artifact = response.json()

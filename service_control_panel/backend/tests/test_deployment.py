@@ -33,7 +33,15 @@ def deployment(tmp_path, monkeypatch):
     yml = tmp_path / "deployment.yml"
     yml.write_text(yaml.safe_dump(manifest()))
     store.put("environment", {"id": "env", "username": "tester"})
-    store.put("artifact", {"id": "a", "path": str(source), "filename": "source.tar"})
+    store.put(
+        "artifact",
+        {
+            "id": "a",
+            "path": str(source),
+            "filename": "source.tar",
+            "size_bytes": source.stat().st_size,
+        },
+    )
     store.put("artifact", {"id": "m", "path": str(yml), "filename": "deployment.yml"})
     instance = {
         "id": "unit-1",
@@ -72,11 +80,15 @@ def deployment(tmp_path, monkeypatch):
                     if "install-mode" in script
                     else "/opt/svc-panel/unit-1/python-env/bin/python"
                 )
+            if "PANEL_DIR=" in script:
+                return "PANEL_DIR=/opt/svc-panel/unit-1\nPANEL_AVAILABLE=10000000000"
+            if "docker run -d" in script:
+                return "warning before\n" + "a" * 64 + "\nwarning after"
             if "docker load" in script:
                 return "Loaded image: mock:test\n"
             return ""
 
-        def upload(self, local, remote):
+        def upload(self, local, remote, callback=None):
             assert Path(local).exists()
 
         def write(self, remote, value):
@@ -110,7 +122,7 @@ def test_docker_load_and_persistent_mounts(deployment):
     script = "\n".join(calls)
     assert "docker load" in script and "docker run -d" in script
     assert "32882:32882" in script and "/data:/svc/data" in script
-    assert "--env-file" in script and "--restart unless-stopped" in script
+    assert "--env-file" in script and "--restart on-failure:3" in script
     assert "--entrypoint python mock:test" in script
 
 

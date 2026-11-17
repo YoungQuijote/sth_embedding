@@ -113,11 +113,14 @@ export function EnvironmentDialog({
           </>
         )}
         <label>
-          可信主机 SHA256 指纹
-          <input name="host_key_sha256" required placeholder="SHA256:..." />
+          可信主机 SHA256 指纹（可选）
+          <input
+            name="host_key_sha256"
+            placeholder="留空：首次成功登录后自动记住指纹"
+          />
         </label>
         <p className="hint">
-          通过可信渠道核对主机公钥指纹；密码和私钥加密保存，不会在列表中返回。
+          可填写已知指纹；留空时自动记录首次成功登录的主机指纹，后续变化会报错。密码和私钥加密保存。
         </p>
         {error && <div className="form-error">{error}</div>}
         <div className="dialog-actions">

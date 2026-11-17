@@ -2,7 +2,7 @@
 
 独立运行的 Mock 服务控制台：Python/FastAPI 后端、TypeScript/React 前端、SQLite 数据与内置监控。不依赖 `agent_mock_service` Python 包，不需要 Grafana、Prometheus、Redis 或外部数据库。
 
-mock 接口契约：[MOCK_REQUIREMENT_001](../agent_mock_service/requirements/MOCK_REQUIREMENT_001.md)。当前 Panel 按该契约实现，mock 真实实现完成后需联调；测试目录中的契约模拟服务不会随生产应用启动。
+mock 接口契约：[MOCK_REQUIREMENT_001](../agent_mock_service/requirements/MOCK_REQUIREMENT_001.md)。已使用仓内真实 mock 实现完成 ASGI 接口联调；测试目录中的契约模拟服务不会随生产应用启动。
 
 ## 启动
 
@@ -28,6 +28,8 @@ uv run uvicorn svc_panel.app:create_app --factory --host 127.0.0.1 --port 8000
 | `PANEL_DATA_DIR` | 当前目录 `.panel` | SQLite、加密密钥、上传文件、导出文件 |
 | `PANEL_ADMIN_TOKEN` | 自动生成 | 管理员访问令牌 |
 | `PANEL_POLL_INTERVAL` | 30 秒，最小 5 秒 | 每轮实例采集间隔；离线实例会增加整轮耗时 |
+| `PANEL_PACKAGE_LIMIT_BYTES` | 2147483648（2 GiB） | 源码/镜像上传上限 |
+| `PANEL_MANIFEST_LIMIT_BYTES` | 2097152（2 MiB） | YAML 清单上传上限 |
 | `PANEL_FRONTEND_DIST` | 项目 `frontend/dist` | 构建产物路径 |
 
 部署到容器：在本目录运行 `docker compose up --build -d`，默认仅绑定宿主 `127.0.0.1:8000`。使用 `docker compose exec panel cat /data/admin.token` 获取首次令牌。对外访问时配置自己的 TLS 反向代理。
@@ -39,15 +41,49 @@ uv run uvicorn svc_panel.app:create_app --factory --host 127.0.0.1 --port 8000
 ## 部署与运行约定
 
 - 只支持 Linux；UI 中其他操作系统、多节点 K8s、Docker bridge 均禁用。
-- 新增环境需填写 SSH 主机、用户、密码或私钥以及可信 SHA256 主机指纹。目标主机可通过 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256` 查看指纹，经可信渠道核对后填写。不会自动信任首次连接的未知密钥。
+- 新增环境填写 SSH 主机、用户、密码或私钥；SHA256 主机指纹可选。目标主机可通过 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256` 查看指纹，经可信渠道核对后填写。留空时采用首次使用信任：首次成功认证后持久记住指纹，后续变化拒绝连接。已填写的指纹仍严格校验。
 - 部署账户需要 root 或非交互 `sudo -n` 权限；基础环境检查失败会结束任务。Panel 不安装 systemd、Docker 或 Kubernetes。
-- 远端实例目录为 `/opt/svc-panel/<instance-id>`，systemd 单元或容器名为 `mock-<instance-id>`；上传内容与配置仅部署账户可读。数据库、日志和 trace 使用单独持久化目录。
+- 远端根目录可配置，默认 `/opt/svc-panel`；实际实例目录为 `<remote_root>/<instance-id>`。上传前检查目录权限/容量，源码还计入解包大小与环境安装最低预留空间。systemd 单元或容器名为 `mock-<instance-id>`；上传内容与配置仅部署账户可读。数据库、日志和 trace 使用单独持久化目录。
 - 裸机：目标需 Python ≥3.11 与 systemd。源码 tar 须在根目录或唯一顶层目录含 `pyproject.toml`，支持 `pip install '.[api]'`。先检查 conda；有则创建独立环境，无则尝试 venv，venv 创建失败才尝试系统 Python。包安装失败直接报告；不绕过发行版 PEP 668 保护。
-- Docker：需要运行中的 Docker daemon；上传 `docker save` 镜像包，单镜像可自动解析，多个镜像需指定本次加载结果中的 image reference。宿主默认端口 32882 映射容器 32882，使用契约启动入口覆盖镜像 entrypoint。
+- Docker：需要运行中的 Docker daemon；上传 `docker save` 镜像包，单镜像可自动解析，多个镜像需指定本次加载结果中的 image reference。宿主与容器端口默认均为 32882，可分别配置。支持标准 Mock 入口、镜像自身 ENTRYPOINT/CMD、自定义 ENTRYPOINT/CMD；默认标准入口会覆盖镜像 entrypoint。额外环境变量加密保存，`MOCK_ADMIN_TOKEN`、`MOCK_INSTANCE_ID`、`MOCK_DATA_DIR`、`MOCK_LOG_DIR`、`MOCK_TRACE_DIR` 由 Panel 管理。支持额外挂载及常见 Docker argv 参数。默认失败最多重启 3 次，0 表示不自动重启；检测容器退出时返回退出码、重启次数和尾部日志。加载前另检查 Docker 数据目录剩余空间。
 - K8s：SSH 环境必须是指定节点，且已有可用 kubeconfig/kubectl；校验节点 InternalIP 与主机地址匹配。支持 `docker load`、`ctr -n k8s.io images import`、`k3s ctr -n k8s.io images import`。多节点自动分发暂不支持。
-- K8s 清单只接受一个目标 Deployment，以及同 namespace 的 Service/ConfigMap/Secret/PVC；需要显式 nodeName 或 hostname nodeSelector、显式 Never/IfNotPresent 拉取策略。用户需配置业务参数、管理 token、数据持久化与访问入口，Panel 不改写原清单。表单管理 token 必须与清单一致；K8s 中 MOCK_INSTANCE_ID 由清单指定，可与 Panel 的登记 ID 不同。
+- K8s 清单只接受一个目标 Deployment，以及同 namespace 的 Service/ConfigMap/Secret/PVC；需要显式 nodeName 或 hostname nodeSelector、显式 Never/IfNotPresent 拉取策略。用户需配置业务参数、管理 token、数据持久化与访问入口，Panel 保留业务配置，添加实例归属标签；为保证卸载边界，拒绝覆盖已有同名对象。表单管理 token 必须与清单一致；K8s 中 MOCK_INSTANCE_ID 由清单指定，可与 Panel 的登记 ID 不同。
 - 访问地址单独填写；直连支持 HTTP/HTTPS，SSH 隧道 V1 支持 HTTP（可用目标主机 localhost 地址）。K8s 的 NodePort/Ingress 地址由清单决定，不自动沿用 32882。
-- 每实例同时只执行一个部署、重启或导出任务。失败时保留任务日志和远端资源用于诊断，不自动删除镜像、目录或 K8s 资源。Panel 重启后未完成任务标为“已中断”，不会自动重放可能已经执行的远程操作。
+- 每实例同时只执行一个部署、重启、卸载或导出任务。失败时保留任务日志和远端资源用于诊断，不自动删除镜像、目录或 K8s 资源。Panel 重启后未完成任务标为“已中断”，不会自动重放可能已经执行的远程操作。
+
+## 新增、移除与卸载
+
+- **新增实例 → 部署新实例**：填写目录及启动参数后先检查远程目录，再上传。UI 显示浏览器 → Panel 的进度；任务详情显示 Panel → 远端的字节、速率和耗时，以及镜像加载、创建容器、等待就绪等阶段。可取消浏览器上传；已提交的远端任务不因此取消。
+- **新增实例 → 监测已有实例**：填写部署方式、URL 和管理 token，验证 `/ready`、管理协议及接口清单后接入。直连不需要 SSH；隧道访问需选择环境。外部实例不具备可信的容器/systemd/K8s 资源归属，重启和卸载按钮置灰。
+- **实例更多操作 → 移除监测**：移除列表和采集，清除该实例的监控样本，远端完全不动，已有任务继续。后台记录及任务保留。再次接入会成为外部实例，不能自动恢复原部署资源管理权；需要卸载时应先卸载再移除监测。
+- **实例更多操作 → 卸载实例**：输入实例名确认。停止并删除所属容器/systemd/K8s 资源及独立实例目录，**包含该目录内数据库、日志、trace**；先回流需要保留的数据。保留共享镜像、用户额外挂载、系统 Python 包及 Panel 本地上传缓存。完成后保留“已卸载”记录，可再移除监测。
+- 旧 Docker/裸机实例兼容默认目录的清理：Docker 校验原持久化挂载，systemd 校验 WorkingDirectory。新实例使用归属标签/标记及记录的容器 ID。目标已被人工删除时，仍清理其余所属文件。资源归属不符则拒绝清理。旧 K8s 无归属记录须人工清理后移除监测。
+- K8s 卸载包含清单中 PVC，PVC 对应数据是否回收取决于集群策略；额外 hostPath 目录不会递归清理。
+
+### Docker 参数示例
+
+自定义 ENTRYPOINT 填 `/bin/sh`，CMD 参数填 `["-c", "exec python -m uvicorn agent_mock_service.app_service:mock_service_app --host 0.0.0.0 --port 32882"]`。不需要 shell 时直接使用可执行文件和参数数组。
+
+```json
+{
+  "command_mode": "custom",
+  "entrypoint": "python",
+  "command": ["-m", "uvicorn", "agent_mock_service.app_service:mock_service_app", "--host", "0.0.0.0", "--port", "8000"],
+  "container_port": 8000,
+  "max_restarts": 3,
+  "environment": {"MY_SETTING": "value"},
+  "extra_args": ["--cpus", "2", "--memory", "2g"],
+  "mounts": [{"source": "/data/models", "target": "/models", "read_only": true}]
+}
+```
+
+`command_mode=image` 保留镜像自身入口。自定义模式下 `entrypoint=null` 保留原入口，空字符串可清除入口（API）；命令和 Docker 参数按 argv 传递，不自动解释 shell。额外挂载目录必须已存在；自定义用户需具备持久化挂载目录权限。不要在命令参数中放密钥，密钥使用环境变量字段。支持的 argv 选项见 `DockerOptions.validate_options`，未支持的选项返回明确校验错误；`--name/--restart/-p/-v/--network` 使用专门配置，不能在额外参数中覆盖。
+
+### 上传慢的定位与协议变化
+
+旧版 `UploadFile` 会先由框架接收/缓存完整 multipart，再进入代码中的分块读取，因此“循环累计超过限制”并不等于“网络传输途中立即拒绝”。旧仓库实际阈值是部署包 1 GiB、清单 2 MiB；无法仅凭反馈确定用户现场 2 MB 错误是面板、代理还是本地修改产生。
+
+新版 `GET /api/upload-policy` 提供当前上限，前端选文件时检查；`POST /api/artifacts?kind=image&filename=image.tar` 使用 `Content-Type: application/octet-stream`、`X-Upload-Size: <字节数>` 和文件二进制正文。后端读取正文前检查声明大小及本地空间，传输中继续累计实际大小，失败/取消清理临时文件。返回 `upload_seconds`、`validation_seconds`。**旧 multipart 上传客户端需同步升级**。反向代理需同步配置允许的 body 大小；若代理缓冲完整请求，关闭此路由的请求缓冲才能保留流式提前拒绝行为。
 
 ## 内置监控与诊断
 
@@ -57,7 +93,7 @@ uv run uvicorn svc_panel.app:create_app --factory --host 127.0.0.1 --port 8000
 - 三次连续就绪检查失败创建健康告警，恢复自动关闭；监控采集失败和操作失败另行记录。告警可确认，确认不等于恢复。
 - 接口清单来自实例；请求模型来自 OpenAPI，支持 JSON 表单/原文、headers、query/path 参数以及 JSON/SSE 响应。试调通过后端代理，URL/方法限定为实例发现的接口；最多读取 2 MiB 或 120 秒，单次无响应超时 30 秒。
 - 日志分页、失败请求→详情→trace、数据库表与分页行查看均走管理 API，不开放任意 SQL 或任意远程文件读取。
-- 日志/数据库/trace 回流为后台任务：请求实例生成导出，等待 ready，流式下载到 Panel。数据库一致性由 mock 的在线备份接口保障。下载产物保留 24 小时，最大 2 GiB；源码/镜像上传最大 1 GiB，清单最大 2 MiB。
+- 日志/数据库/trace 回流为后台任务：请求实例生成导出，等待 ready，流式下载到 Panel。数据库一致性由 mock 的在线备份接口保障。下载产物保留 24 小时，最大 2 GiB；源码/镜像上传默认最大 2 GiB，清单默认最大 2 MiB，见配置项。
 - 浏览器下载使用经管理员认证签发的 60 秒一次性链接，浏览器原生流式接收文件，不把管理员令牌放入 URL，也不先将整个文件加载为内存 Blob。
 - `MonitoringProvider` 是外部监控扩展边界，V1 仅实现 `BuiltinMonitoringProvider`。没有自动探测 Grafana，也没有运行时切换数据源。
 
@@ -76,6 +112,15 @@ npm run test:e2e
 
 模拟预览：构建前端后，在 backend 执行 `.venv/bin/python tests/preview_server.py`，访问 8000，令牌为 `browser-test-token-123456789`。这只用于开发：数据临时生成、SSH 部署被明确替换成模拟执行器，不能作为真实部署验收。
 
-## 尚需实际联调
+真实 mock 接口集成测试可独立运行（仅测试安装对侧包，生产 Panel 不依赖它）：
 
-mock 的真实管理接口、真实 Linux/systemd/conda/venv/系统 Python、Docker 镜像、K8s 节点运行时与用户清单。当前自动化覆盖管理契约、数据库快照下载、统计、后台任务、部署命令构造及浏览器操作，不把模拟测试声明为真实远程部署成功。
+```bash
+uv pip install --python service_control_panel/backend/.venv/bin/python -e './agent_mock_service[api]'
+service_control_panel/backend/.venv/bin/pytest service_control_panel/backend/tests/test_mock_integration.py
+```
+
+可选 Docker 引擎测试：设置 `PANEL_DOCKER_TEST_IMAGE=<含实际 mock 包、Python、uvicorn 的测试镜像>`，运行 `backend/tests/test_docker_integration.py`；需要可用 Docker，且 daemon 能访问本机临时目录。测试使用真实启动/检查/停止/删除命令，本地传输替代 SSH；为兼容不同用户运行的 rootless daemon，临时持久化目录设置可写权限，仅写入测试数据。验证自定义入口、有限次重启和归属清理；不验证 SSH/SFTP、镜像传输/加载及 Docker 数据目录容量。测试创建并清理 UUID 容器/目录，保留指定镜像。未设置时跳过。
+
+## 尚需环境验收
+
+真实 SSH/SFTP 网络、Linux/systemd/conda/venv/系统 Python 与 K8s 节点运行时/用户清单仍需目标环境验收。实际 mock ASGI 联调与本地 Docker 引擎测试不等于远程主机端到端部署成功。

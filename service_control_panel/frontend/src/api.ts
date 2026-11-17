@@ -39,10 +39,74 @@ export const post = (path: string, body?: unknown) =>
     method: "POST",
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-export async function upload(file: File, kind: string) {
-  const body = new FormData();
-  body.append("file", file);
-  return api("/artifacts?kind=" + kind, { method: "POST", body });
+export type UploadProgress = {
+  sent: number;
+  total: number;
+  seconds: number;
+  bytesPerSecond: number;
+};
+export async function upload(
+  file: File,
+  kind: string,
+  onProgress?: (value: UploadProgress) => void,
+  signal?: AbortSignal,
+) {
+  const policy = await api("/upload-policy");
+  const limit = policy.limits[kind];
+  if (!file.size || file.size > limit)
+    throw new Error(
+      `${kind} 文件大小不符合要求：最大 ${(limit / 1024 ** 2).toFixed(0)} MiB，当前 ${(file.size / 1024 ** 2).toFixed(1)} MiB`,
+    );
+  return new Promise<any>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const started = performance.now();
+    xhr.open(
+      "POST",
+      "/api/artifacts?kind=" +
+        encodeURIComponent(kind) +
+        "&filename=" +
+        encodeURIComponent(file.name),
+    );
+    xhr.setRequestHeader("Authorization", authHeaders().Authorization);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-Upload-Size", String(file.size));
+    const abort = () => xhr.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    xhr.onloadend = () => signal?.removeEventListener("abort", abort);
+    xhr.upload.onprogress = (e) => {
+      const seconds = Math.max(0.001, (performance.now() - started) / 1000);
+      onProgress?.({
+        sent: e.loaded,
+        total: file.size,
+        seconds,
+        bytesPerSecond: e.loaded / seconds,
+      });
+    };
+    xhr.onerror = () => reject(new Error("上传连接失败，请检查网络或代理限制"));
+    xhr.onabort = () => reject(new Error("上传已取消"));
+    xhr.onload = () => {
+      let value;
+      try {
+        value = JSON.parse(xhr.responseText);
+      } catch {
+        value = { detail: xhr.responseText };
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(value);
+      else
+        reject(
+          new Error(
+            typeof value.detail === "string"
+              ? value.detail
+              : JSON.stringify(value.detail || value),
+          ),
+        );
+    };
+    if (signal?.aborted) {
+      reject(new Error("上传已取消"));
+      return;
+    }
+    xhr.send(file);
+  });
 }
 export async function download(id: string) {
   const ticket = await post("/downloads/" + id + "/ticket");

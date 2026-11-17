@@ -8,20 +8,22 @@ import time
 import uuid
 from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
-from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .models import ConsoleInput, EnvironmentInput, InstanceInput
+from .deployment_support import check_storage
+from .models import AttachInput, ConsoleInput, EnvironmentInput, InstanceInput, RemoteDirectoryInput
 from .remote import SSH, require_json
 from .service import Service
 from .store import Store
+from .uploads import receive_upload, upload_limits
 
 
 def public_instance(instance):
-    return {k: v for k, v in instance.items() if k != "admin_token"}
+    return {k: v for k, v in instance.items() if k not in {"admin_token", "docker_environment"}}
 
 
 def create_app(data_dir=None, admin_token=None, background=True):
@@ -66,7 +68,7 @@ def create_app(data_dir=None, admin_token=None, background=True):
 
     def get(kind, identifier):
         item = store.get(kind, identifier)
-        if not item:
+        if not item or (kind == "instance" and not item.get("monitoring_enabled", True)):
             raise HTTPException(404, "资源不存在")
         return item
 
@@ -107,50 +109,37 @@ def create_app(data_dir=None, admin_token=None, background=True):
         except Exception as error:
             raise HTTPException(502, "SSH 环境检查失败：" + str(error)[:1000]) from error
 
-    @api.post("/artifacts", status_code=201)
-    def upload(
-        file: UploadFile = File(...), kind: str = Query(pattern="^(source|image|manifest)$")
-    ):
-        identifier = str(uuid.uuid4())
-        folder = store.directory / "artifacts"
-        folder.mkdir(exist_ok=True)
-        path = folder / identifier
-        size, digest = 0, hashlib.sha256()
-        limit = 2 * 1024**2 if kind == "manifest" else 1024**3
-        try:
-            with path.open("xb") as stream:
-                while chunk := file.file.read(1024**2):
-                    size += len(chunk)
-                    if size > limit:
-                        raise HTTPException(413, "文件超过大小限制（清单 2 MiB，部署包 1 GiB）")
-                    digest.update(chunk)
-                    stream.write(chunk)
-            if not size:
-                raise ValueError("文件为空")
-            if kind == "source":
-                from .deploy import validate_source
+    @api.get("/upload-policy")
+    def upload_policy():
+        return {"limits": upload_limits(), "protocol": "raw-stream-v1"}
 
-                validate_source(path)
-            item = {
-                "id": identifier,
-                "filename": Path(file.filename or "artifact").name[:200],
-                "kind": kind,
-                "size_bytes": size,
-                "sha256": digest.hexdigest(),
-                "path": str(path),
-                "created_at": time.time(),
-            }
-            store.put("artifact", item)
-            return {k: v for k, v in item.items() if k != "path"}
-        except Exception:
-            path.unlink(missing_ok=True)
-            raise
-        finally:
-            file.file.close()
+    @api.post("/environments/{identifier}/storage")
+    def storage_check(
+        identifier: str,
+        body: RemoteDirectoryInput,
+        size_bytes: int = Query(gt=0),
+        mode: str = Query(pattern="^(bare|docker|k8s)$"),
+    ):
+        env = get("environment", identifier)
+        try:
+            with SSH(env, store) as ssh:
+                return check_storage(ssh, body.remote_root, size_bytes, mode)
+        except Exception as error:
+            raise HTTPException(502, "目录检查失败：" + str(error)[:2000]) from error
+
+    @api.post("/artifacts", status_code=201)
+    async def upload(
+        request: Request,
+        kind: str = Query(pattern="^(source|image|manifest)$"),
+        filename: str = Query(min_length=1, max_length=200),
+    ):
+        return await receive_upload(request, store, kind, filename)
 
     @api.get("/instances")
     def instances():
-        return [public_instance(i) for i in store.list("instance")]
+        return [
+            public_instance(i) for i in store.list("instance") if i.get("monitoring_enabled", True)
+        ]
 
     @api.post("/instances", status_code=202)
     def deploy(body: InstanceInput):
@@ -159,6 +148,7 @@ def create_app(data_dir=None, admin_token=None, background=True):
         if artifact["kind"] != ("source" if body.mode == "bare" else "image"):
             raise ValueError("部署文件类型与部署方式不匹配")
         data = body.model_dump()
+        data["docker_environment"] = store.seal(json.dumps(data["docker"].pop("environment")))
         if body.mode == "k8s":
             manifest = get("artifact", body.manifest_id)
             if manifest["kind"] != "manifest":
@@ -169,6 +159,13 @@ def create_app(data_dir=None, admin_token=None, background=True):
         with service.lock:
             existing = store.list("instance")
             for other in existing:
+                if not other.get("monitoring_enabled", True) or other["state"] == "undeployed":
+                    continue
+                if other["base_url"] == body.base_url and (
+                    body.access == other.get("access", "direct") == "direct"
+                    or other.get("environment_id") == body.environment_id
+                ):
+                    raise HTTPException(409, "此服务地址已被监测")
                 if other["environment_id"] == body.environment_id:
                     if body.mode != "k8s" and other["mode"] != "k8s" and other["port"] == body.port:
                         raise HTTPException(409, "该环境端口已被 Panel 中的实例占用")
@@ -183,6 +180,9 @@ def create_app(data_dir=None, admin_token=None, background=True):
                 artifact_sha256=artifact["sha256"],
                 created_at=time.time(),
                 state="pending",
+                origin="panel",
+                resource_version=2,
+                monitoring_enabled=True,
                 health="unknown",
                 health_failures=0,
                 checked_at=None,
@@ -192,6 +192,72 @@ def create_app(data_dir=None, admin_token=None, background=True):
             job = service.submit(data["id"], "deploy")
         return {"instance": public_instance(data), "job": job}
 
+    @api.post("/instances/attach", status_code=201)
+    def attach(body: AttachInput):
+        if body.environment_id:
+            get("environment", body.environment_id)
+        candidate = body.model_dump()
+        candidate.update(
+            id=str(uuid.uuid4()),
+            origin="attached",
+            state="deployed",
+            health="unknown",
+            monitoring_enabled=True,
+            created_at=time.time(),
+            admin_token=store.seal(body.admin_token),
+            port=urlsplit(body.base_url).port
+            or (443 if body.base_url.startswith("https:") else 80),
+        )
+        try:
+            with service.client(candidate) as client:
+                ready = require_json(client.get("/ready"))
+                info = require_json(client.get("/management/v1/info"))
+                if ready.get("status") != "ready" or info.get("contract_version") != "panel.v1":
+                    raise ValueError("目标地址不是已就绪的 panel.v1 Mock 服务")
+                endpoints = require_json(client.get("/management/v1/endpoints"))["items"]
+        except Exception as error:
+            raise HTTPException(502, service.safe_error(error, candidate)) from error
+        with service.lock:
+            for other in store.list("instance"):
+                if (
+                    other.get("monitoring_enabled", True)
+                    and other["state"] != "undeployed"
+                    and other["base_url"] == body.base_url
+                    and (
+                        body.access == other.get("access", "direct") == "direct"
+                        or other.get("environment_id") == body.environment_id
+                    )
+                ):
+                    raise HTTPException(409, "此地址已被监测")
+            candidate.update(
+                health="healthy",
+                checked_at=time.time(),
+                health_failures=0,
+                endpoints=endpoints,
+                capabilities=info.get("capabilities", []),
+                service_instance_id=info.get("instance_id"),
+            )
+            store.put("instance", candidate)
+        return public_instance(candidate)
+
+    @api.delete("/instances/{identifier}")
+    def forget(identifier: str):
+        get("instance", identifier)
+        with service.lock:
+            store.patch("instance", identifier, monitoring_enabled=False, removed_at=time.time())
+            with store.connection() as db:
+                db.execute("DELETE FROM samples WHERE instance_id=?", (identifier,))
+        return {"removed": True, "remote_resources_unchanged": True}
+
+    @api.post("/instances/{identifier}/undeploy", status_code=202)
+    def remove_deployment(identifier: str, confirmation: dict):
+        instance = get("instance", identifier)
+        if instance.get("origin") == "attached":
+            raise HTTPException(409, "外部实例仅支持移除监测，不允许卸载未知归属资源")
+        if confirmation.get("confirm_name") != instance["name"]:
+            raise HTTPException(400, "请输入实例名称确认卸载")
+        return service.submit(identifier, "undeploy")
+
     @api.post("/instances/{identifier}/health")
     def health(identifier: str):
         get("instance", identifier)
@@ -199,7 +265,9 @@ def create_app(data_dir=None, admin_token=None, background=True):
 
     @api.post("/instances/{identifier}/restart", status_code=202)
     def restart(identifier: str):
-        get("instance", identifier)
+        instance = get("instance", identifier)
+        if instance.get("origin") == "attached" or instance["state"] == "undeployed":
+            raise HTTPException(409, "此实例不具备 Panel 可管理的运行资源")
         return service.submit(identifier, "restart")
 
     @api.get("/jobs")
@@ -212,7 +280,8 @@ def create_app(data_dir=None, admin_token=None, background=True):
 
     @api.get("/alerts")
     def alerts():
-        return store.alerts()
+        active = {i["id"] for i in store.list("instance") if i.get("monitoring_enabled", True)}
+        return [a for a in store.alerts() if a["instance_id"] in active]
 
     @api.post("/alerts/{identifier}/acknowledge")
     def acknowledge(identifier: int):
@@ -247,9 +316,8 @@ def create_app(data_dir=None, admin_token=None, background=True):
     def endpoints(identifier: str):
         result = remote_get(identifier, "/management/v1/endpoints")
         with service.lock:
-            instance = get("instance", identifier)
-            instance["endpoints"] = result["items"]
-            store.put("instance", instance)
+            get("instance", identifier)
+            store.patch("instance", identifier, endpoints=result["items"])
         return result
 
     @api.get("/instances/{identifier}/openapi")

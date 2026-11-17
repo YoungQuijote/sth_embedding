@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import select
 import shlex
 import socketserver
@@ -17,23 +18,26 @@ import paramiko
 
 class FingerprintPolicy(paramiko.MissingHostKeyPolicy):
     def __init__(self, expected):
-        self.expected = expected.rstrip("=")
+        self.expected = (expected or "").rstrip("=")
+        self.actual = None
 
     def missing_host_key(self, client, hostname, key):
         actual = "SHA256:" + base64.b64encode(
             hashlib.sha256(key.asbytes()).digest()
         ).decode().rstrip("=")
-        if actual != self.expected:
+        self.actual = actual
+        if self.expected and actual != self.expected:
             raise ValueError(f"SSH 主机指纹不匹配，实际指纹 {actual}")
 
 
 class SSH:
     def __init__(self, environment, store):
         self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(FingerprintPolicy(environment["host_key_sha256"]))
+        policy = FingerprintPolicy(
+            environment.get("host_key_sha256") or environment.get("learned_host_key_sha256")
+        )
+        self.client.set_missing_host_key_policy(policy)
         secret = store.unseal(environment["credentials"])
-        import json
-
         credentials = json.loads(secret)
         key = None
         if credentials.get("private_key"):
@@ -48,18 +52,41 @@ class SSH:
                     continue
             if key is None:
                 raise ValueError("无法读取 SSH 私钥")
-        self.client.connect(
-            environment["host"],
-            port=environment["port"],
-            username=environment["username"],
-            password=credentials.get("password") or None,
-            pkey=key,
-            timeout=15,
-            auth_timeout=15,
-            banner_timeout=15,
-            look_for_keys=False,
-            allow_agent=False,
-        )
+        try:
+            self.client.connect(
+                environment["host"],
+                port=environment["port"],
+                username=environment["username"],
+                password=credentials.get("password") or None,
+                pkey=key,
+                timeout=15,
+                auth_timeout=15,
+                banner_timeout=15,
+                look_for_keys=False,
+                allow_agent=False,
+            )
+            # Learn only after successful authentication, and atomically pin on first use.
+            if policy.actual:
+                with store.connection() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    row = db.execute(
+                        "SELECT value FROM objects WHERE kind='environment' AND id=?",
+                        (environment["id"],),
+                    ).fetchone()
+                    current = json.loads(row[0])
+                    expected = current.get("host_key_sha256") or current.get(
+                        "learned_host_key_sha256"
+                    )
+                    if expected and expected.rstrip("=") != policy.actual:
+                        raise ValueError("SSH 主机指纹已发生变化")
+                    current["learned_host_key_sha256"] = policy.actual
+                    db.execute(
+                        "UPDATE objects SET value=? WHERE kind='environment' AND id=?",
+                        (json.dumps(current), environment["id"]),
+                    )
+        except Exception:
+            self.client.close()
+            raise
 
     def __enter__(self):
         return self
@@ -96,9 +123,9 @@ class SSH:
             raise RuntimeError(result[-12000:] or "远程命令失败")
         return result
 
-    def upload(self, local, remote):
+    def upload(self, local, remote, callback=None):
         with self.client.open_sftp() as sftp:
-            sftp.put(str(local), remote)
+            sftp.put(str(local), remote, callback=callback)
             sftp.chmod(remote, 0o600)
 
     def write(self, remote, data):

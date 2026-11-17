@@ -118,3 +118,55 @@
 + /api/downloads/{id}/ticket、/api/files/{ticket}; 认证签发的短时一次性文件下载
 
 ---
+
+### 需求标题: 部署目录与启动参数可配置，补齐实例接入、移除监测和卸载
+
+**需求文档**: /service_control_panel/requirements/PANEL_REQUIREMENT_002.md
+
+**解决方案**: SSH 指纹改为可选并持久记住首次成功连接；统一远程目录/容量检查；Docker 提供入口、参数、环境变量、挂载和有限重启；区分移除监测与按资源归属卸载；支持接入已有服务；原始流上传提前验证限额，展示两段传输及部署阶段进度。复用已实现的 panel.v1 接口，完成真实 mock 与本地 Docker 引擎联调。
+
+**交付文档**: /service_control_panel/deliveries/PANEL_DELIVERY_002.md
+
+**变更时间**: 20261116
+
+**代码变更**:
+
+/service_control_panel/README.md +54/-9
+/service_control_panel/backend/src/svc_panel/app.py +117/-49
+/service_control_panel/backend/src/svc_panel/deploy.py +110/-48
+/service_control_panel/backend/src/svc_panel/models.py +134/-2
+/service_control_panel/backend/src/svc_panel/remote.py +46/-19
+/service_control_panel/backend/src/svc_panel/service.py +62/-21
+/service_control_panel/backend/src/svc_panel/store.py +16/-0
+/service_control_panel/backend/tests/preview_server.py +8/-1
+/service_control_panel/backend/tests/test_deployment.py +15/-3
+/service_control_panel/backend/tests/test_panel.py +6/-2
+/service_control_panel/frontend/e2e/panel.spec.ts +78/-4
+/service_control_panel/frontend/src/api.ts +68/-4
+/service_control_panel/frontend/src/components/DataDrawer.tsx +33/-0
+/service_control_panel/frontend/src/components/DeployDialog.tsx +215/-6
+/service_control_panel/frontend/src/components/EnvironmentDialog.tsx +6/-3
+/service_control_panel/frontend/src/labels.ts +3/-0
+/service_control_panel/frontend/src/main.tsx +123/-4
++ /service_control_panel/backend/src/svc_panel/deployment_support.py
++ /service_control_panel/backend/src/svc_panel/uploads.py
++ /service_control_panel/backend/tests/test_docker_integration.py
++ /service_control_panel/backend/tests/test_lifecycle.py
++ /service_control_panel/backend/tests/test_mock_integration.py
++ /service_control_panel/deliveries/PANEL_DELIVERY_002.md
++ /service_control_panel/frontend/src/components/AttachDialog.tsx
++ /service_control_panel/requirements/PANEL_REQUIREMENT_002.md
+
+**接口变更**:
+
++ GET /api/upload-policy; 查询按文件类型的上传上限及 raw-stream-v1 协议
++ POST /api/environments/{id}/storage; 检查部署根目录权限、空间及 Docker 存储容量
++ POST /api/instances/attach; 验证就绪/管理协议并接入已有服务
++ DELETE /api/instances/{id}; 停止监测并隐藏记录，不触碰远程资源
++ POST /api/instances/{id}/undeploy; 按名称确认后提交所属资源卸载任务
+POST /api/artifacts; multipart 改为 application/octet-stream，需 filename 和 X-Upload-Size，进入正文前检查限额
+POST /api/instances; 新增 remote_root 和 docker 启动配置；环境变量加密保存
+POST /api/environments; host_key_sha256 改为可选，首次成功登录记录 learned_host_key_sha256
+GET /api/jobs/{id}; 增加阶段、传输字节、速度与耗时信息
+
+---

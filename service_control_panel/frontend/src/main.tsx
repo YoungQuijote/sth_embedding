@@ -44,6 +44,7 @@ import {
   TrafficChart,
 } from "./components/common";
 import { EnvironmentDialog } from "./components/EnvironmentDialog";
+import { AttachDialog } from "./components/AttachDialog";
 import { DeployDialog } from "./components/DeployDialog";
 import { DataDrawer } from "./components/DataDrawer";
 import { ConsoleDrawer } from "./components/ConsoleDrawer";
@@ -65,6 +66,7 @@ function App() {
     );
   const [drawer, setDrawer] = useState<Data | null>(null),
     [deployOpen, setDeployOpen] = useState(false),
+    [attachOpen, setAttachOpen] = useState(false),
     [envOpen, setEnvOpen] = useState(false),
     [expanded, setExpanded] = useState<string | null>(null),
     [endpoints, setEndpoints] = useState<Data[]>([]),
@@ -74,7 +76,9 @@ function App() {
       instance: Data;
       endpoint: Data;
     } | null>(null),
-    [confirm, setConfirm] = useState<Data | null>(null);
+    [confirm, setConfirm] = useState<Data | null>(null),
+    [remove, setRemove] = useState<Data | null>(null),
+    [removeName, setRemoveName] = useState("");
   const refreshRef = useRef(0),
     endpointRef = useRef(0);
   function notify(message: string, error = false) {
@@ -596,6 +600,10 @@ function App() {
                         <button
                           className="icon"
                           title="重启实例"
+                          disabled={
+                            instance.origin === "attached" ||
+                            instance.state === "undeployed"
+                          }
                           onClick={() => setConfirm(instance)}
                         >
                           <RefreshCw size={16} />
@@ -654,6 +662,33 @@ function App() {
                                 }
                               </button>
                             ))}
+                            <hr />
+                            <button
+                              onClick={(e) => {
+                                e.currentTarget
+                                  .closest("details")
+                                  ?.removeAttribute("open");
+                                setRemoveName("");
+                                setRemove({ instance, kind: "forget" });
+                              }}
+                            >
+                              移除监测
+                            </button>
+                            <button
+                              disabled={
+                                instance.origin === "attached" ||
+                                instance.state === "undeployed"
+                              }
+                              onClick={(e) => {
+                                e.currentTarget
+                                  .closest("details")
+                                  ?.removeAttribute("open");
+                                setRemoveName("");
+                                setRemove({ instance, kind: "undeploy" });
+                              }}
+                            >
+                              卸载实例
+                            </button>
                           </div>
                         </details>
                       </div>
@@ -661,6 +696,14 @@ function App() {
                     <div className="instance-foot">
                       <span className="mono">{instance.id.slice(0, 8)}</span>
                       <span>{stateNames[instance.state]}</span>
+                      {instance.origin === "attached" && (
+                        <span className="tag">外部接入</span>
+                      )}
+                      {instance.remote_directory && (
+                        <span title={instance.remote_directory}>
+                          目录：{instance.remote_directory}
+                        </span>
+                      )}
                       <span>
                         <Clock3 size={12} />
                         {date(instance.checked_at)}
@@ -802,7 +845,11 @@ function App() {
                     <code>
                       {env.username}@{env.host}:{env.port}
                     </code>
-                    <p className="fingerprint">{env.host_key_sha256}</p>
+                    <p className="fingerprint">
+                      {env.host_key_sha256 ||
+                        env.learned_host_key_sha256 ||
+                        "首次成功登录后自动记住指纹"}
+                    </p>
                     <button
                       className="secondary"
                       disabled={busy}
@@ -954,13 +1001,13 @@ function App() {
               <p>
                 Linux 环境需要已有 Python ≥ 3.11、systemd
                 或对应容器运行时。凭据需有非交互 sudo 权限（root
-                除外）。主机指纹请通过可信渠道获取。
+                除外）。主机指纹可选；留空时首次成功登录后自动记住，后续检测变更。
               </p>
               <p>
                 K8s 清单需配置可访问的 Service 地址、管理
                 token、持久化目录和节点调度约束；SSH
                 连接必须指向镜像加载节点。Panel
-                按原清单应用，不自动修改业务配置。
+                保留业务配置，为资源添加归属标签后应用。
               </p>
               <p>
                 重启会清空实例内存中的多轮会话。查看与回流数据库使用 mock
@@ -979,12 +1026,84 @@ function App() {
           environments={environments}
           onClose={() => setDeployOpen(false)}
           onEnvironment={() => setEnvOpen(true)}
+          onAttach={() => {
+            setDeployOpen(false);
+            setAttachOpen(true);
+          }}
           onDone={(job) => {
             setDeployOpen(false);
             setDrawer({ type: "job", jobId: job.id });
             refresh();
           }}
         />
+      )}
+      {attachOpen && (
+        <AttachDialog
+          environments={environments}
+          onClose={() => setAttachOpen(false)}
+          onDone={() => {
+            setAttachOpen(false);
+            refresh();
+            notify("实例已接入监测");
+          }}
+        />
+      )}
+      {remove && (
+        <Modal
+          title={remove.kind === "forget" ? "移除监测" : "卸载实例"}
+          subtitle={remove.instance.name}
+          onClose={() => setRemove(null)}
+        >
+          <p>
+            {remove.kind === "forget"
+              ? "将此实例从列表和监控中移除。远程服务、容器和文件保持原样，正在执行的任务仍会继续。之后可以通过“监测已有实例”重新接入。"
+              : "将停止并删除该实例的运行资源，清理独立部署目录内的上传包、配置、数据库、日志和 Trace。额外挂载、共享镜像及系统 Python 包保留。此操作不可恢复，请先回流需要保留的数据。"}
+          </p>
+          {remove.kind === "undeploy" && (
+            <label>
+              输入实例名称确认
+              <input
+                value={removeName}
+                onChange={(e) => setRemoveName(e.target.value)}
+                placeholder={remove.instance.name}
+              />
+            </label>
+          )}
+          <div className="dialog-actions">
+            <button className="secondary" onClick={() => setRemove(null)}>
+              取消
+            </button>
+            <button
+              className="primary"
+              disabled={
+                busy ||
+                (remove.kind === "undeploy" &&
+                  removeName !== remove.instance.name)
+              }
+              onClick={() => {
+                const item = remove;
+                setRemove(null);
+                action(async () => {
+                  if (item.kind === "forget") {
+                    await api("/instances/" + item.instance.id, {
+                      method: "DELETE",
+                    });
+                    setExpanded(null);
+                    notify("已移除监测，远程资源未改动");
+                  } else {
+                    const job = await post(
+                      "/instances/" + item.instance.id + "/undeploy",
+                      { confirm_name: removeName },
+                    );
+                    setDrawer({ type: "job", jobId: job.id });
+                  }
+                });
+              }}
+            >
+              {remove.kind === "forget" ? "确认移除监测" : "确认卸载"}
+            </button>
+          </div>
+        </Modal>
       )}
       {envOpen && (
         <EnvironmentDialog
