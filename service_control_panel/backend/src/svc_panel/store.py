@@ -26,6 +26,21 @@ class Store:
         with self.connection() as db:
             db.executescript("""
                 PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS feedback(
+                    id TEXT PRIMARY KEY, author TEXT NOT NULL, summary TEXT NOT NULL,
+                    description TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','developing','acceptance','closed')),
+                    created_at REAL NOT NULL, status_updated_at REAL NOT NULL, revision INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS feedback_created ON feedback(created_at,id);
+                CREATE INDEX IF NOT EXISTS feedback_status_updated ON feedback(status_updated_at,id);
+                CREATE INDEX IF NOT EXISTS feedback_status ON feedback(status);
+                CREATE TABLE IF NOT EXISTS feedback_images(
+                    id TEXT PRIMARY KEY, feedback_id TEXT NOT NULL REFERENCES feedback(id) ON DELETE CASCADE,
+                    filename TEXT NOT NULL, mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                    position INTEGER NOT NULL, data BLOB NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS feedback_images_parent ON feedback_images(feedback_id);
+
                 CREATE TABLE IF NOT EXISTS objects(kind TEXT, id TEXT, value TEXT NOT NULL, PRIMARY KEY(kind,id));
                 CREATE TABLE IF NOT EXISTS samples(instance_id TEXT, timestamp REAL, boot_id TEXT, value TEXT);
                 CREATE INDEX IF NOT EXISTS samples_time ON samples(instance_id,timestamp);
@@ -38,6 +53,7 @@ class Store:
     def connection(self):
         db = sqlite3.connect(self.path, timeout=30)
         db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
         try:
             with db:
                 yield db

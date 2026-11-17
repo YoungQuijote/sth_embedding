@@ -203,3 +203,42 @@ GET /api/jobs/{id}; 增加阶段、传输字节、速度与耗时信息
 POST /api/instances、POST /api/instances/attach; 登记锁内重新校验环境存在
 
 ---
+
+### 需求标题: 新增需求与反馈清单、详情、配图及编辑管理
+
+**需求文档**: /service_control_panel/requirements/PANEL_REQUIREMENT_004.md
+
+**解决方案**: 右上角灯泡入口打开右侧清单，详情/编辑以弹层承载；SQLite 同事务保存条目与图片 BLOB，支持四状态、筛选、四种时间排序、分页、编辑和确认删除。系统记录时间，只有状态实际变化更新状态时间；版本校验防止并发覆盖，图片读取复用认证。新增 Pillow 图片校验依赖及完整前后端回归。
+
+**交付文档**: /service_control_panel/deliveries/PANEL_DELIVERY_004.md
+
+**变更时间**: 20261117
+
+**代码变更**:
+
+/service_control_panel/README.md +21/-0
+/service_control_panel/backend/pyproject.toml +1/-1
+/service_control_panel/backend/src/svc_panel/app.py +2/-0
+/service_control_panel/backend/src/svc_panel/store.py +16/-0
+/service_control_panel/backend/uv.lock +87/-0
+/service_control_panel/frontend/src/components/common.tsx +1/-1
+/service_control_panel/frontend/src/main.tsx +14/-0
+/service_control_panel/frontend/src/style.css +199/-0
++ /service_control_panel/backend/src/svc_panel/feedback.py
++ /service_control_panel/backend/tests/test_feedback.py
++ /service_control_panel/deliveries/PANEL_DELIVERY_004.md
++ /service_control_panel/frontend/e2e/feedback.spec.ts
++ /service_control_panel/frontend/src/components/FeedbackDrawer.tsx
++ /service_control_panel/requirements/PANEL_REQUIREMENT_004.md
+
+**接口变更**:
+
++ GET /api/feedback; 共享清单状态筛选、时间排序及分页
++ POST /api/feedback; 新增需求及可选配图
++ GET /api/feedback/{id}; 获取完整详情及图片元数据
++ PUT /api/feedback/{id}; 按 revision 编辑条目、状态和配图
++ DELETE /api/feedback/{id}?revision=N; 删除当前版本并级联清理图片
++ GET /api/feedback/{id}/images/{image_id}; 认证读取配图
++ feedback、feedback_images; 新增 SQLite 表及索引，启用外键级联删除
+
+---
