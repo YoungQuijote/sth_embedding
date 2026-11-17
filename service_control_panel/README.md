@@ -38,6 +38,27 @@ uv run uvicorn svc_panel.app:create_app --factory --host 127.0.0.1 --port 8000
 
 备份时停止 Panel 后整体备份数据目录，必须同时保留 `credentials.key` 和 SQLite；密钥丢失后无法解密 SSH 凭据与 mock 管理令牌。
 
+## 需求与反馈
+
+右上角刷新、告警后面的**灯泡按钮**打开“需求与反馈”右侧抽屉。清单支持状态筛选，以及提出时间/状态变更时间的升序、降序排序；默认新提出的在前，每页 50 条。
+
+点击“新增需求 / 反馈”，仅需求简述必填（最多 256 字）。提出人选填、最多 16 字，不校验真实身份；描述选填、最多 20,000 字。字符长度按 Unicode 码点计数，emoji 与中文同样计数。四种状态为待处理、开发中、待验收、已闭环，新增默认待处理。
+
+点击清单卡片查看详情，支持编辑文字、状态、配图和确认删除。配图支持 PNG/JPEG/WebP/GIF，最多 5 张、单张 ≤5 MiB、≤2000 万像素；点击图片可打开原图。录入时间只在创建时记录；状态更新时间初始等于录入时间，之后只有状态实际变化才更新。普通文字/配图编辑不会刷新状态时间。
+
+文字和图片 BLOB 分别保存在同一 `panel.sqlite` 的 `feedback` / `feedback_images` 表。保存原子提交，删除级联清理图片，不使用外部图床。图片读取同样需要认证，浏览器以临时 Blob URL 展示；列表不传输图片内容。共享清单无用户隔离，同时编辑采用版本检查，过期编辑/删除返回 409，页面可重新加载最新详情。
+
+接口均位于 `/api/feedback`：
+
+- `GET /api/feedback?status=pending&sort=created_desc&limit=50&offset=0`：清单；状态可省略。排序值为 `created_asc`、`created_desc`、`status_asc`、`status_desc`。
+- `POST /api/feedback`：新增 JSON `{summary, author?, description?, status?, images?}`；状态内部值 `pending/developing/acceptance/closed`。
+- `GET /api/feedback/{id}`：完整字段、`revision` 和图片元数据。
+- `PUT /api/feedback/{id}`：提交完整编辑字段及当前 `revision`；`images` 是要保留的全部配图，已有图填 `{id}`，新图填 `{filename, data_base64}`；省略图片列表视为清空。
+- `DELETE /api/feedback/{id}?revision=N`：删除当前版本及其图片。
+- `GET /api/feedback/{id}/images/{image_id}`：认证读取原图。
+
+JSON 请求体最大 36 MiB（含 Base64），服务端检查实际图片格式/像素/大小；前端选择时也检查数量和大小。备份仍需停止 Panel 后备份完整数据目录。升级需重新安装后端锁定依赖（新增 Pillow 图片校验库）并构建前端；数据库新增表自动创建，原业务数据不变。
+
 ## 环境删除与管理员改密
 
 - **远程环境 → 环境卡片 → 删除环境**：确认后移除 Panel 保存的连接、加密 SSH 凭据和指纹，不连接远端，不删除远端服务/文件。

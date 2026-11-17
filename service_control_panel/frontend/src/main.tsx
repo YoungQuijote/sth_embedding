@@ -4,6 +4,7 @@ import {
   ArrowDownToLine,
   ArrowRight,
   Bell,
+  Lightbulb,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -43,6 +44,7 @@ import {
   Modal,
   TrafficChart,
 } from "./components/common";
+import { FeedbackDrawer } from "./components/FeedbackDrawer";
 import { PasswordDialog } from "./components/PasswordDialog";
 import { EnvironmentDialog } from "./components/EnvironmentDialog";
 import { AttachDialog } from "./components/AttachDialog";
@@ -70,6 +72,7 @@ function App() {
     [attachOpen, setAttachOpen] = useState(false),
     [envOpen, setEnvOpen] = useState(false),
     [passwordOpen, setPasswordOpen] = useState(false),
+    [feedbackOpen, setFeedbackOpen] = useState(false),
     [deleteEnv, setDeleteEnv] = useState<Data | null>(null),
     [deleteEnvError, setDeleteEnvError] = useState(""),
     [deletingEnv, setDeletingEnv] = useState(false),
@@ -334,6 +337,14 @@ function App() {
             >
               <Bell size={18} />
               {activeAlerts.length > 0 && <span className="bell-dot" />}
+            </button>
+            <button
+              className="icon"
+              title="需求与反馈"
+              aria-label="需求与反馈"
+              onClick={() => setFeedbackOpen(true)}
+            >
+              <Lightbulb size={18} />
             </button>
             <span className="avatar small">AD</span>
           </div>
@@ -1249,6 +1260,9 @@ function App() {
             </button>
           </div>
         </Modal>
+      )}
+      {feedbackOpen && (
+        <FeedbackDrawer onClose={() => setFeedbackOpen(false)} />
       )}
       {toast && <Toast {...toast} />}
     </div>

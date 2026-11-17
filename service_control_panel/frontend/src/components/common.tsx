@@ -74,7 +74,7 @@ export function Modal({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [onClose]);
   return (
     <div
       className="overlay"

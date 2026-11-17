@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import AdminAuth
 from .deployment_support import check_storage
+from .feedback import feedback_router
 from .models import (
     AttachInput,
     ConsoleInput,
@@ -567,6 +568,7 @@ def create_app(data_dir=None, admin_token=None, background=True):
             stack.close()
             raise HTTPException(502, service.safe_error(error, instance)) from error
 
+    api.include_router(feedback_router(store))
     app.include_router(api)
     frontend = Path(
         os.environ.get(
