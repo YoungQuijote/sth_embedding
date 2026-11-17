@@ -73,6 +73,8 @@ class SSH:
                         "SELECT value FROM objects WHERE kind='environment' AND id=?",
                         (environment["id"],),
                     ).fetchone()
+                    if row is None:
+                        raise ValueError("远程环境已被删除")
                     current = json.loads(row[0])
                     expected = current.get("host_key_sha256") or current.get(
                         "learned_host_key_sha256"

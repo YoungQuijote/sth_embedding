@@ -11,11 +11,21 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .auth import AdminAuth
 from .deployment_support import check_storage
-from .models import AttachInput, ConsoleInput, EnvironmentInput, InstanceInput, RemoteDirectoryInput
+from .models import (
+    AttachInput,
+    ConsoleInput,
+    EnvironmentInput,
+    InstanceInput,
+    PasswordChangeInput,
+    RemoteDirectoryInput,
+)
 from .remote import SSH, require_json
 from .service import Service
 from .store import Store
@@ -28,18 +38,7 @@ def public_instance(instance):
 
 def create_app(data_dir=None, admin_token=None, background=True):
     store = Store(data_dir or os.environ.get("PANEL_DATA_DIR", ".panel"))
-    token = admin_token or os.environ.get("PANEL_ADMIN_TOKEN")
-    if not token:
-        token_path = store.directory / "admin.token"
-        try:
-            with token_path.open("x") as stream:
-                os.chmod(token_path, 0o600)
-                stream.write(secrets.token_urlsafe(32))
-        except FileExistsError:
-            pass
-        token = token_path.read_text().strip()
-    if len(token) < 16:
-        raise ValueError("PANEL_ADMIN_TOKEN 至少 16 字符")
+    auth = AdminAuth(store, admin_token)
     interval = max(5, int(os.environ.get("PANEL_POLL_INTERVAL", "30")))
     service = Service(store, interval)
 
@@ -61,8 +60,8 @@ def create_app(data_dir=None, admin_token=None, background=True):
     app.state.store, app.state.service = store, service
 
     def authenticated(authorization: str = Header(default="")):
-        if not secrets.compare_digest(authorization, "Bearer " + token):
-            raise HTTPException(401, "请使用管理员访问令牌登录")
+        if not authorization.startswith("Bearer ") or not auth.verify(authorization[7:]):
+            raise HTTPException(401, "请使用管理员登录密码或访问令牌登录")
 
     api = APIRouter(prefix="/api", dependencies=[Depends(authenticated)])
 
@@ -76,9 +75,26 @@ def create_app(data_dir=None, admin_token=None, background=True):
     async def invalid(request, error):
         return JSONResponse({"detail": str(error)}, status_code=400)
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, error):
+        if request.url.path == "/api/account/password":
+            # Pydantic's default detail includes input values, including password fields.
+            return JSONResponse(
+                {"detail": "请检查密码：" + "；".join(e["msg"] for e in error.errors())},
+                status_code=422,
+            )
+        return await request_validation_exception_handler(request, error)
+
     @api.get("/session")
     def session():
         return {"user": "管理员", "monitoring": "builtin", "poll_interval": interval}
+
+    @api.post("/account/password")
+    def change_password(body: PasswordChangeInput):
+        with service.lock:
+            if not auth.change(body.current_password, body.new_password):
+                raise HTTPException(403, "当前登录密码或访问令牌不正确")
+        return {"changed": True, "reauthenticate": True}
 
     @api.get("/environments")
     def environments():
@@ -95,6 +111,34 @@ def create_app(data_dir=None, admin_token=None, background=True):
         )
         store.put("environment", data)
         return {k: v for k, v in data.items() if k != "credentials"}
+
+    @api.delete("/environments/{identifier}")
+    def delete_environment(identifier: str):
+        with service.lock:
+            get("environment", identifier)
+            references = [
+                i for i in store.list("instance") if i.get("environment_id") == identifier
+            ]
+            active_ids = {
+                j["instance_id"] for j in store.list("job") if j["status"] in {"queued", "running"}
+            }
+            blockers = [
+                i
+                for i in references
+                if i["id"] in active_ids
+                or (i.get("monitoring_enabled", True) and i["state"] != "undeployed")
+            ]
+            if blockers:
+                names = "、".join(i.get("name", i["id"]) for i in blockers)
+                raise HTTPException(
+                    409,
+                    "环境仍被实例或未完成任务使用："
+                    + names
+                    + "。请先卸载或移除实例监测，并等待相关任务结束。",
+                )
+            with store.connection() as db:
+                db.execute("DELETE FROM objects WHERE kind='environment' AND id=?", (identifier,))
+            return {"deleted": True, "remote_resources_unchanged": True}
 
     @api.post("/environments/{identifier}/check")
     def check_environment(identifier: str):
@@ -157,6 +201,7 @@ def create_app(data_dir=None, admin_token=None, background=True):
 
             validate_manifest(manifest["path"], data)
         with service.lock:
+            get("environment", body.environment_id)
             existing = store.list("instance")
             for other in existing:
                 if not other.get("monitoring_enabled", True) or other["state"] == "undeployed":
@@ -218,6 +263,8 @@ def create_app(data_dir=None, admin_token=None, background=True):
         except Exception as error:
             raise HTTPException(502, service.safe_error(error, candidate)) from error
         with service.lock:
+            if body.environment_id:
+                get("environment", body.environment_id)
             for other in store.list("instance"):
                 if (
                     other.get("monitoring_enabled", True)

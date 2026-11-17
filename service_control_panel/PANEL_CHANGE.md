@@ -170,3 +170,36 @@ POST /api/environments; host_key_sha256 改为可选，首次成功登录记录 
 GET /api/jobs/{id}; 增加阶段、传输字节、速度与耗时信息
 
 ---
+
+### 需求标题: 支持删除远程环境与管理员修改登录密码
+
+**需求文档**: /service_control_panel/requirements/PANEL_REQUIREMENT_003.md
+
+**解决方案**: 环境删除检查可见实例和全部未完成任务依赖，只移除本地连接/凭据；实例登记在锁内重新确认环境。设置页新增改密入口，兼容现有访问令牌，持久化带盐 scrypt 校验值，原子撤销下载票据，修改后重新登录。新增后端和浏览器回归测试及离线恢复说明。
+
+**交付文档**: /service_control_panel/deliveries/PANEL_DELIVERY_003.md
+
+**变更时间**: 20261117
+
+**代码变更**:
+
+/service_control_panel/README.md +12/-1
+/service_control_panel/backend/src/svc_panel/app.py +62/-15
+/service_control_panel/backend/src/svc_panel/models.py +14/-0
+/service_control_panel/backend/src/svc_panel/remote.py +2/-0
+/service_control_panel/frontend/e2e/panel.spec.ts +100/-0
+/service_control_panel/frontend/src/main.tsx +97/-2
++ /service_control_panel/backend/src/svc_panel/auth.py
++ /service_control_panel/backend/tests/test_account_environment.py
++ /service_control_panel/deliveries/PANEL_DELIVERY_003.md
++ /service_control_panel/frontend/src/components/PasswordDialog.tsx
++ /service_control_panel/requirements/PANEL_REQUIREMENT_003.md
+
+**接口变更**:
+
++ DELETE /api/environments/{id}; 删除无活动依赖的环境记录与凭据，不操作远端
++ POST /api/account/password; 校验当前凭据和新密码，持久改密并撤销旧下载票据
++ svc_panel.auth.AdminAuth; 兼容 bootstrap 令牌、scrypt 密码校验和原子轮换
+POST /api/instances、POST /api/instances/attach; 登记锁内重新校验环境存在
+
+---

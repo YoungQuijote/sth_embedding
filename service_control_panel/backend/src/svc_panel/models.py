@@ -201,3 +201,17 @@ class AttachInput(BaseModel):
         if self.access == "ssh" and (not self.environment_id or self.base_url.startswith("https:")):
             raise ValueError("SSH 访问需选择环境并使用 HTTP 地址")
         return self
+
+
+class PasswordChangeInput(BaseModel):
+    current_password: str = Field(min_length=1, max_length=4096)
+    new_password: str = Field(min_length=16, max_length=256, pattern=r"^[\x21-\x7e]+$")
+    confirm_password: str = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def matching(self):
+        if self.new_password != self.confirm_password:
+            raise ValueError("两次输入的新密码不一致")
+        if self.new_password == self.current_password:
+            raise ValueError("新密码不能与当前密码相同")
+        return self

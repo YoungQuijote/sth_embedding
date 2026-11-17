@@ -43,6 +43,7 @@ import {
   Modal,
   TrafficChart,
 } from "./components/common";
+import { PasswordDialog } from "./components/PasswordDialog";
 import { EnvironmentDialog } from "./components/EnvironmentDialog";
 import { AttachDialog } from "./components/AttachDialog";
 import { DeployDialog } from "./components/DeployDialog";
@@ -68,6 +69,10 @@ function App() {
     [deployOpen, setDeployOpen] = useState(false),
     [attachOpen, setAttachOpen] = useState(false),
     [envOpen, setEnvOpen] = useState(false),
+    [passwordOpen, setPasswordOpen] = useState(false),
+    [deleteEnv, setDeleteEnv] = useState<Data | null>(null),
+    [deleteEnvError, setDeleteEnvError] = useState(""),
+    [deletingEnv, setDeletingEnv] = useState(false),
     [expanded, setExpanded] = useState<string | null>(null),
     [endpoints, setEndpoints] = useState<Data[]>([]),
     [loadingEndpoints, setLoadingEndpoints] = useState(false),
@@ -211,7 +216,7 @@ function App() {
         >
           <div className="eyebrow">WORKSPACE ACCESS</div>
           <h1>进入服务控制台</h1>
-          <p>使用管理员访问令牌，管理你的部署与运行环境。</p>
+          <p>使用管理员登录密码或访问令牌，管理你的部署与运行环境。</p>
           <label>
             访问令牌
             <input
@@ -227,7 +232,7 @@ function App() {
             进入控制台 <ArrowRight size={16} />
           </button>
           <div className="hint">
-            首次启动生成的令牌位于 Panel 数据目录的 admin.token 文件。
+            首次令牌位于 Panel 数据目录的 admin.token 文件；改密后请使用新密码。
           </div>
         </form>
         {toast && <Toast {...toast} />}
@@ -868,6 +873,15 @@ function App() {
                     >
                       检查连接 <ArrowRight size={14} />
                     </button>
+                    <button
+                      className="subtle"
+                      onClick={() => {
+                        setDeleteEnvError("");
+                        setDeleteEnv(env);
+                      }}
+                    >
+                      删除环境
+                    </button>
                   </section>
                 ))
               )}
@@ -978,6 +992,20 @@ function App() {
           )}
           {page === "settings" && (
             <section className="settings-card">
+              <h2>管理员账号</h2>
+              <p>
+                修改控制台登录密码或访问令牌，不影响远程 SSH 凭据和 Mock
+                服务令牌。
+              </p>
+              <div className="setting-row">
+                <span>登录密码 / 访问令牌</span>
+                <button
+                  className="secondary"
+                  onClick={() => setPasswordOpen(true)}
+                >
+                  修改登录密码
+                </button>
+              </div>
               <h2>内置监控</h2>
               <p>
                 指标由 Panel 定时采集并保存在本地数据库，历史保留 7
@@ -1101,6 +1129,73 @@ function App() {
               }}
             >
               {remove.kind === "forget" ? "确认移除监测" : "确认卸载"}
+            </button>
+          </div>
+        </Modal>
+      )}
+      {passwordOpen && (
+        <PasswordDialog
+          onClose={() => setPasswordOpen(false)}
+          onChanged={() => {
+            sessionStorage.removeItem("panel-token");
+            setLoginToken("");
+            setPasswordOpen(false);
+            setDrawer(null);
+            setConsoleTarget(null);
+            setAuthenticated(false);
+            notify("密码已修改，请使用新密码重新登录");
+          }}
+        />
+      )}
+      {deleteEnv && (
+        <Modal
+          title="删除远程环境"
+          subtitle={deleteEnv.name}
+          onClose={() => {
+            if (!deletingEnv) setDeleteEnv(null);
+          }}
+        >
+          <p>
+            删除此环境的连接配置、SSH
+            凭据和主机指纹。不会停止远程服务，也不会删除主机上的文件。
+          </p>
+          <p className="hint">
+            仍被监测的未卸载实例或未完成任务会阻止删除；请先处理相关实例。只移除监测会保留远端资源。
+          </p>
+          {deleteEnvError && (
+            <div className="form-error" role="alert">
+              {deleteEnvError}
+            </div>
+          )}
+          <div className="dialog-actions">
+            <button
+              className="secondary"
+              disabled={deletingEnv}
+              onClick={() => setDeleteEnv(null)}
+            >
+              取消
+            </button>
+            <button
+              className="primary"
+              disabled={deletingEnv}
+              onClick={async () => {
+                setDeletingEnv(true);
+                setDeleteEnvError("");
+                try {
+                  await api("/environments/" + deleteEnv.id, {
+                    method: "DELETE",
+                  });
+                  setDeleteEnv(null);
+                  await refresh();
+                  notify("环境已删除，远程主机未改动");
+                } catch (err) {
+                  setDeleteEnvError(String(err));
+                } finally {
+                  setDeletingEnv(false);
+                }
+              }}
+            >
+              {deletingEnv ? "正在删除…" : "确认删除环境"}
             </button>
           </div>
         </Modal>
