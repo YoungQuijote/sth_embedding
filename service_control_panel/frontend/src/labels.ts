@@ -8,6 +8,7 @@ export const stateNames: Data = {
   pending: "待部署",
   deploying: "部署中",
   restarting: "重启中",
+  redeploying: "重新部署中",
   deployed: "已部署",
   failed: "操作失败",
   unknown: "状态待确认",
@@ -23,6 +24,7 @@ export const categoryNames: Data = {
 export const jobNames: Data = {
   deploy: "部署实例",
   restart: "重启实例",
+  redeploy: "重新部署实例",
   export: "文件回流",
   undeploy: "卸载实例",
 };

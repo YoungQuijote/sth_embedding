@@ -242,3 +242,43 @@ POST /api/instances、POST /api/instances/attach; 登记锁内重新校验环境
 + feedback、feedback_images; 新增 SQLite 表及索引，启用外键级联删除
 
 ---
+
+### 需求标题: Docker 参数回填及免传包重新部署
+
+**需求文档**: /service_control_panel/requirements/PANEL_REQUIREMENT_005.md
+
+**解决方案**: Docker 实例原重启入口打开回填表单，固定身份、环境、目录和镜像，允许修改启动参数及服务连接。SQLite 区分最近提交与生效配置，令牌/环境变量加密。复用远端不可变镜像 ID 和数据目录，以候选容器替换旧容器，通过健康检查后清理旧容器；失败尝试恢复，持久化恢复记录用于中断后的重部署或卸载。增加配置版本、归属、任务互斥和端口/URL 冲突校验。
+
+**交付文档**: /service_control_panel/deliveries/PANEL_DELIVERY_005.md
+
+**变更时间**: 20261118
+
+**代码变更**:
+
+/service_control_panel/README.md +15/-2
+/service_control_panel/backend/src/svc_panel/app.py +64/-3
+/service_control_panel/backend/src/svc_panel/deploy.py +11/-1
+/service_control_panel/backend/src/svc_panel/deployment_support.py +4/-5
+/service_control_panel/backend/src/svc_panel/models.py +22/-0
+/service_control_panel/backend/src/svc_panel/service.py +36/-6
+/service_control_panel/backend/tests/preview_server.py +9/-0
+/service_control_panel/backend/tests/test_deployment.py +24/-1
+/service_control_panel/backend/tests/test_docker_integration.py +94/-1
+/service_control_panel/frontend/e2e/panel.spec.ts +116/-0
+/service_control_panel/frontend/src/components/DeployDialog.tsx +159/-63
+/service_control_panel/frontend/src/labels.ts +2/-0
+/service_control_panel/frontend/src/main.tsx +37/-3
++ /service_control_panel/backend/src/svc_panel/reconfigure.py
++ /service_control_panel/backend/tests/test_reconfigure.py
++ /service_control_panel/deliveries/PANEL_DELIVERY_005.md
++ /service_control_panel/requirements/PANEL_REQUIREMENT_005.md
+
+**接口变更**:
+
++ GET /api/instances/{id}/configuration; 认证读取上次提交配置及版本，禁止缓存
++ POST /api/instances/{id}/redeploy; 保存可变参数并创建免传包 Docker 重部署任务
+POST /api/instances/{id}/restart; 保留普通重启；存在未完成恢复记录时拒绝执行
+POST /api/instances、POST /api/instances/attach; 同时校验正在切换配置所保留的地址/端口
+SQLite instance 对象; 增加 requested_configuration、configuration_revision、loaded_image_id、redeploy_recovery，无需建表
+
+---

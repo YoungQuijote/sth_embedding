@@ -86,6 +86,8 @@ def deployment(tmp_path, monkeypatch):
                 return "warning before\n" + "a" * 64 + "\nwarning after"
             if "docker load" in script:
                 return "Loaded image: mock:test\n"
+            if "docker image inspect" in script:
+                return "sha256:" + "b" * 64
             return ""
 
         def upload(self, local, remote, callback=None):
@@ -123,7 +125,8 @@ def test_docker_load_and_persistent_mounts(deployment):
     assert "docker load" in script and "docker run -d" in script
     assert "32882:32882" in script and "/data:/svc/data" in script
     assert "--env-file" in script and "--restart on-failure:3" in script
-    assert "--entrypoint python mock:test" in script
+    assert "--entrypoint python sha256:" + "b" * 64 in script
+    assert deployer.store.get("instance", instance["id"])["loaded_image_id"] == "sha256:" + "b" * 64
 
 
 def test_explicit_image_must_be_loaded_from_this_archive(deployment):
@@ -182,3 +185,23 @@ def test_invalid_k8s_boundary_rejected(deployment, doc):
     path.write_text(yaml.safe_dump(doc))
     with pytest.raises(ValueError):
         validate_manifest(path, instance)
+
+
+def test_initial_startup_failure_keeps_pinned_image_for_correction(deployment, monkeypatch):
+    import svc_panel.deploy as module
+
+    deployer, instance, *_ = deployment
+    instance["mode"] = "docker"
+    original = module.SSH.run
+
+    def fail_start(self, script, timeout=900):
+        if "docker run -d" in script:
+            raise RuntimeError("bad entrypoint")
+        return original(self, script, timeout)
+
+    monkeypatch.setattr(module.SSH, "run", fail_start)
+    with pytest.raises(RuntimeError, match="bad entrypoint"):
+        deployer.run(instance)
+    current = deployer.store.get("instance", instance["id"])
+    assert current["loaded_image_id"] == "sha256:" + "b" * 64
+    assert current["loaded_image"] == "mock:test"

@@ -85,6 +85,7 @@ function App() {
       endpoint: Data;
     } | null>(null),
     [confirm, setConfirm] = useState<Data | null>(null),
+    [reconfigure, setReconfigure] = useState<Data | null>(null),
     [remove, setRemove] = useState<Data | null>(null),
     [removeName, setRemoveName] = useState("");
   const refreshRef = useRef(0),
@@ -191,7 +192,9 @@ function App() {
           ? i.health === "healthy"
           : filter === "unhealthy"
             ? i.health === "unhealthy"
-            : i.state === "deploying" || i.state === "restarting")) &&
+            : i.state === "deploying" ||
+              i.state === "restarting" ||
+              i.state === "redeploying")) &&
       `${i.name} ${i.base_url} ${i.version}`
         .toLowerCase()
         .includes(search.toLowerCase()),
@@ -615,12 +618,29 @@ function App() {
                         </button>
                         <button
                           className="icon"
-                          title="重启实例"
+                          title={
+                            instance.mode === "docker" &&
+                            instance.origin !== "attached"
+                              ? "重新部署实例"
+                              : "重启实例"
+                          }
                           disabled={
                             instance.origin === "attached" ||
                             instance.state === "undeployed"
                           }
-                          onClick={() => setConfirm(instance)}
+                          onClick={() =>
+                            instance.mode === "docker"
+                              ? action(async () => {
+                                  setReconfigure(
+                                    await api(
+                                      "/instances/" +
+                                        instance.id +
+                                        "/configuration",
+                                    ),
+                                  );
+                                })
+                              : setConfirm(instance)
+                          }
                         >
                           <RefreshCw size={16} />
                         </button>
@@ -1232,6 +1252,20 @@ function App() {
         <ConsoleDrawer
           {...consoleTarget}
           onClose={() => setConsoleTarget(null)}
+        />
+      )}
+      {reconfigure && (
+        <DeployDialog
+          initial={reconfigure}
+          environments={environments}
+          onClose={() => setReconfigure(null)}
+          onEnvironment={() => {}}
+          onAttach={() => {}}
+          onDone={(job) => {
+            setReconfigure(null);
+            setDrawer({ type: "job", jobId: job.id });
+            refresh();
+          }}
         />
       )}
       {confirm && (

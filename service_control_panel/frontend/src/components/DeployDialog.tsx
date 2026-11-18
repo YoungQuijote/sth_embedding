@@ -17,14 +17,18 @@ export function DeployDialog({
   onEnvironment,
   onAttach,
   onDone,
+  initial,
 }: {
+  initial?: Data;
   environments: Data[];
   onClose: () => void;
   onEnvironment: () => void;
   onAttach: () => void;
   onDone: (job: Data) => void;
 }) {
-  const [mode, setMode] = useState("bare"),
+  const saved = initial?.configuration;
+  const identity = initial?.instance;
+  const [mode, setMode] = useState(identity?.mode || "bare"),
     [busy, setBusy] = useState(false),
     [progress, setProgress] = useState(""),
     [error, setError] = useState("");
@@ -35,31 +39,40 @@ export function DeployDialog({
   );
   const [limits, setLimits] = useState<Data>({}),
     [fileInfo, setFileInfo] = useState(""),
-    [commandMode, setCommandMode] = useState("service");
+    [commandMode, setCommandMode] = useState(
+      saved?.docker.command_mode || "service",
+    );
   const abort = useRef<AbortController | null>(null);
   useEffect(() => {
-    api("/upload-policy")
-      .then((p) => setLimits(p.limits))
-      .catch((e) => setError(String(e)));
+    if (!initial)
+      api("/upload-policy")
+        .then((p) => setLimits(p.limits))
+        .catch((e) => setError(String(e)));
     return () => abort.current?.abort();
   }, []);
   return (
     <Modal
-      title="部署一个新实例"
-      subtitle="选择运行环境与部署方式，剩下的交给控制台。"
+      title={initial ? "重新部署实例" : "部署一个新实例"}
+      subtitle={
+        initial
+          ? "回填上次提交的参数；复用原镜像及数据目录，无需重新上传。"
+          : "选择运行环境与部署方式，剩下的交给控制台。"
+      }
       onClose={() => {
         if (!busy) onClose();
       }}
       wide
     >
-      <div className="segmented">
-        <button className="selected" type="button">
-          部署新实例
-        </button>
-        <button type="button" disabled={busy} onClick={onAttach}>
-          监测已有实例
-        </button>
-      </div>
+      {!initial && (
+        <div className="segmented">
+          <button className="selected" type="button">
+            部署新实例
+          </button>
+          <button type="button" disabled={busy} onClick={onAttach}>
+            监测已有实例
+          </button>
+        </div>
+      )}
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -70,7 +83,10 @@ export function DeployDialog({
           try {
             const file = form.get("artifact") as File;
             const kind = mode === "bare" ? "source" : "image";
-            if (!file.size || (limits[kind] && file.size > limits[kind]))
+            if (
+              !initial &&
+              (!file.size || (limits[kind] && file.size > limits[kind]))
+            )
               throw new Error(
                 `部署包超限或为空，最大 ${limits[kind] / 1024 ** 2} MiB`,
               );
@@ -95,6 +111,21 @@ export function DeployDialog({
                     max_restarts: Number(values.max_restarts ?? 3),
                   }
                 : undefined;
+            if (initial) {
+              const job = await post(
+                "/instances/" + identity.id + "/redeploy",
+                {
+                  revision: saved.revision,
+                  port: Number(values.port),
+                  base_url: values.base_url,
+                  access: values.access,
+                  admin_token: values.admin_token,
+                  docker,
+                },
+              );
+              onDone(job);
+              return;
+            }
             abort.current = new AbortController();
             setProgress("检查远程目录权限和剩余空间…");
             await post(
@@ -155,6 +186,8 @@ export function DeployDialog({
             实例名称
             <input
               name="name"
+              defaultValue={identity?.name}
+              disabled={!!initial}
               placeholder="例如：agent-mock-staging"
               required
             />
@@ -166,7 +199,8 @@ export function DeployDialog({
                 name="environment_id"
                 aria-label="远程环境"
                 required
-                defaultValue=""
+                defaultValue={identity?.environment_id || ""}
+                disabled={!!initial}
               >
                 <option value="" disabled>
                   选择 Linux 环境
@@ -181,6 +215,7 @@ export function DeployDialog({
                 type="button"
                 className="icon bordered"
                 title="新增环境"
+                disabled={!!initial}
                 onClick={onEnvironment}
               >
                 <Plus size={17} />
@@ -201,6 +236,7 @@ export function DeployDialog({
               type="button"
               key={String(id)}
               className={mode === id ? "selected" : ""}
+              disabled={!!initial}
               onClick={() => setMode(String(id))}
             >
               {React.createElement(Icon as typeof Server, { size: 21 })}
@@ -214,43 +250,58 @@ export function DeployDialog({
           远程部署根目录
           <input
             name="remote_root"
-            defaultValue="/opt/svc-panel"
+            defaultValue={identity?.remote_root || "/opt/svc-panel"}
+            disabled={!!initial}
             required
             placeholder="/home/deploy/mock-services"
           />
         </label>
         <p className="hint">
-          在此目录下创建独立的实例 ID
-          子目录。上传前检查写入权限和可用空间；卸载只清理该子目录。
+          {initial
+            ? "复用原实例目录及 data / logs / traces，不重新传输部署包。"
+            : "在此目录下创建独立的实例 ID 子目录。上传前检查写入权限和可用空间；卸载只清理该子目录。"}
         </p>
-        <label>
-          {mode === "bare" ? "源码 tar 包" : "镜像 tar 包"}
-          <input
-            type="file"
-            name="artifact"
-            accept=".tar,.gz,.tgz"
-            required
-            key={mode}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              setError("");
-              if (file) {
-                setFileInfo(
-                  `${file.name} · ${(file.size / 1024 ** 2).toFixed(1)} MiB`,
-                );
-                const limit = limits[mode === "bare" ? "source" : "image"];
-                if (limit && file.size > limit)
-                  setError(
-                    `所选部署包超限，最大 ${limit / 1024 ** 2} MiB，尚未上传`,
-                  );
-              }
-            }}
-          />
-        </label>
-        <p className="hint">
-          {fileInfo || "选择文件后立即检查大小"} · 部署包上限{" "}
-          {limits.image ? limits.image / 1024 ** 2 + " MiB" : "加载中"}
-        </p>
+        {initial ? (
+          <label>
+            原部署包
+            <input
+              value={identity.version || identity.artifact_id || "已加载镜像"}
+              disabled
+              readOnly
+            />
+          </label>
+        ) : (
+          <>
+            <label>
+              {mode === "bare" ? "源码 tar 包" : "镜像 tar 包"}
+              <input
+                type="file"
+                name="artifact"
+                accept=".tar,.gz,.tgz"
+                required
+                key={mode}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  setError("");
+                  if (file) {
+                    setFileInfo(
+                      `${file.name} · ${(file.size / 1024 ** 2).toFixed(1)} MiB`,
+                    );
+                    const limit = limits[mode === "bare" ? "source" : "image"];
+                    if (limit && file.size > limit)
+                      setError(
+                        `所选部署包超限，最大 ${limit / 1024 ** 2} MiB，尚未上传`,
+                      );
+                  }
+                }}
+              />
+            </label>
+            <p className="hint">
+              {fileInfo || "选择文件后立即检查大小"} · 部署包上限{" "}
+              {limits.image ? limits.image / 1024 ** 2 + " MiB" : "加载中"}
+            </p>
+          </>
+        )}
         {mode === "bare" && (
           <p className="hint">
             目标机需具备 systemd、Python ≥
@@ -260,8 +311,21 @@ export function DeployDialog({
         {mode === "docker" && (
           <>
             <label>
-              镜像名称（单镜像包可自动识别）
-              <input name="image_ref" placeholder="mock-service:latest" />
+              {initial
+                ? "原镜像（复用远端已加载版本）"
+                : "镜像名称（单镜像包可自动识别）"}
+              <input
+                name="image_ref"
+                placeholder="mock-service:latest"
+                defaultValue={
+                  identity?.loaded_image ||
+                  identity?.image_ref ||
+                  (initial
+                    ? identity?.loaded_image_id || "按原容器镜像 ID 复用"
+                    : "")
+                }
+                disabled={!!initial}
+              />
             </label>
             <label>
               启动方式
@@ -279,14 +343,20 @@ export function DeployDialog({
               <>
                 <label>
                   ENTRYPOINT（可选，可执行文件路径）
-                  <input name="entrypoint" placeholder="python 或 /bin/sh" />
+                  <input
+                    name="entrypoint"
+                    placeholder="python 或 /bin/sh"
+                    defaultValue={saved?.docker.entrypoint || ""}
+                  />
                 </label>
                 <label>
                   启动命令 / 参数（JSON 数组）
                   <textarea
                     name="command"
                     defaultValue={
-                      '["-m", "uvicorn", "agent_mock_service.app_service:mock_service_app", "--host", "0.0.0.0", "--port", "32882"]'
+                      saved
+                        ? JSON.stringify(saved.docker.command, null, 2)
+                        : '["-m", "uvicorn", "agent_mock_service.app_service:mock_service_app", "--host", "0.0.0.0", "--port", "32882"]'
                     }
                     rows={4}
                   />
@@ -303,7 +373,7 @@ export function DeployDialog({
                 <input
                   name="container_port"
                   type="number"
-                  defaultValue={32882}
+                  defaultValue={saved?.docker.container_port ?? 32882}
                   min={1}
                   max={65535}
                   required
@@ -314,7 +384,7 @@ export function DeployDialog({
                 <input
                   name="max_restarts"
                   type="number"
-                  defaultValue={3}
+                  defaultValue={saved?.docker.max_restarts ?? 3}
                   min={0}
                   max={10}
                   required
@@ -328,13 +398,25 @@ export function DeployDialog({
               <summary>环境变量、挂载与更多 Docker 参数</summary>
               <label>
                 环境变量（JSON 对象）
-                <textarea name="environment" defaultValue="{}" rows={3} />
+                <textarea
+                  name="environment"
+                  defaultValue={JSON.stringify(
+                    saved?.docker.environment || {},
+                    null,
+                    2,
+                  )}
+                  rows={3}
+                />
               </label>
               <label>
                 额外挂载（JSON 数组）
                 <textarea
                   name="mounts"
-                  defaultValue="[]"
+                  defaultValue={JSON.stringify(
+                    saved?.docker.mounts || [],
+                    null,
+                    2,
+                  )}
                   placeholder={
                     '[{"source":"/data/models","target":"/models","read_only":true}]'
                   }
@@ -350,7 +432,11 @@ export function DeployDialog({
                 Docker 参数（JSON 数组）
                 <textarea
                   name="extra_args"
-                  defaultValue="[]"
+                  defaultValue={JSON.stringify(
+                    saved?.docker.extra_args || [],
+                    null,
+                    2,
+                  )}
                   placeholder={'["--cpus", "2", "--memory", "2g"]'}
                   rows={3}
                 />
@@ -419,7 +505,7 @@ export function DeployDialog({
               <input
                 name="port"
                 type="number"
-                defaultValue="32882"
+                defaultValue={saved?.port ?? 32882}
                 min="1"
                 max="65535"
                 required
@@ -428,7 +514,7 @@ export function DeployDialog({
           )}
           <label>
             访问方式
-            <select name="access">
+            <select name="access" defaultValue={saved?.access || "direct"}>
               <option value="direct">Panel 直接访问</option>
               <option value="ssh">通过 SSH 隧道访问 HTTP</option>
             </select>
@@ -438,6 +524,7 @@ export function DeployDialog({
           服务访问地址
           <input
             name="base_url"
+            defaultValue={saved?.base_url || ""}
             type="url"
             required
             placeholder={
@@ -453,7 +540,7 @@ export function DeployDialog({
           Mock 管理令牌
           <input
             name="admin_token"
-            defaultValue={token}
+            defaultValue={saved?.admin_token || token}
             minLength={16}
             required
             type="text"
@@ -463,12 +550,21 @@ export function DeployDialog({
         {mode === "k8s" && (
           <p className="hint">请填写与清单中 MOCK_ADMIN_TOKEN 相同的值。</p>
         )}
-        {error && <div className="form-error">{error}</div>}
+        {initial && (
+          <p className="hint">
+            应用参数会短暂中断服务并清空内存会话。失败时尝试恢复旧容器；持久化数据不作快照回滚。修改暴露端口后请同步更新访问地址。
+          </p>
+        )}
+        {error && (
+          <div className="form-error" role="alert">
+            {error}
+          </div>
+        )}
         <div className="dialog-actions">
           <span className="hint">
             {progress && busy ? progress : "部署进度会在后台持续记录"}
           </span>
-          {busy && (
+          {busy && !initial && (
             <button
               className="secondary"
               type="button"
@@ -483,7 +579,7 @@ export function DeployDialog({
             ) : (
               <Rocket size={16} />
             )}
-            开始部署
+            {initial ? "保存参数并重新部署" : "开始部署"}
           </button>
         </div>
       </form>

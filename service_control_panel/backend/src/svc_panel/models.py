@@ -182,6 +182,28 @@ class ConsoleInput(BaseModel):
     body: object = None
 
 
+class RedeployInput(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    revision: int = Field(ge=0)
+    port: int = Field(ge=1, le=65535)
+    base_url: str
+    access: Literal["direct", "ssh"]
+    admin_token: str = Field(min_length=16, max_length=256, pattern=r"^[A-Za-z0-9_.-]+$")
+    docker: DockerOptions
+
+    @field_validator("base_url")
+    @classmethod
+    def url(cls, value):
+        return InstanceInput.url(value)
+
+    @model_validator(mode="after")
+    def connection(self):
+        if self.access == "ssh" and self.base_url.startswith("https:"):
+            raise ValueError("V1 SSH 隧道访问使用 HTTP 服务地址；HTTPS 请使用直连")
+        return self
+
+
 class AttachInput(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     mode: Literal["bare", "docker", "k8s"]

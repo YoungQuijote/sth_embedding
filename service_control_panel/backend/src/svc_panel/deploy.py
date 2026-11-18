@@ -257,8 +257,18 @@ class Deployer:
                     image = images[0]
                 elif image not in images:
                     raise ValueError("指定镜像不在本次加载结果中")
+                image_id = ssh.run(
+                    base + "$SUDO docker image inspect --format '{{.Id}}' " + q(image),
+                    timeout=30,
+                ).strip()
+                if not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id):
+                    raise RuntimeError("无法确定已加载镜像的不可变 ID")
+                # Keep the image identity even when the first startup fails.
+                self.store.patch(
+                    "instance", instance["id"], loaded_image=image, loaded_image_id=image_id
+                )
                 output = self.command(
-                    ssh, "创建并启动容器", docker_run_command(instance, image, directory)
+                    ssh, "创建并启动容器", docker_run_command(instance, image_id, directory)
                 )
                 identifiers = [
                     line.strip()
