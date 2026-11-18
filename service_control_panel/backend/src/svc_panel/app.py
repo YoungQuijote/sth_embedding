@@ -25,7 +25,14 @@ from .models import (
     EnvironmentInput,
     InstanceInput,
     PasswordChangeInput,
+    RedeployInput,
     RemoteDirectoryInput,
+)
+from .reconfigure import (
+    PRIVATE_FIELDS,
+    readable_configuration,
+    reserved_instances,
+    sealed_configuration,
 )
 from .remote import SSH, require_json
 from .service import Service
@@ -34,7 +41,7 @@ from .uploads import receive_upload, upload_limits
 
 
 def public_instance(instance):
-    return {k: v for k, v in instance.items() if k not in {"admin_token", "docker_environment"}}
+    return {k: v for k, v in instance.items() if k not in PRIVATE_FIELDS}
 
 
 def create_app(data_dir=None, admin_token=None, background=True):
@@ -203,7 +210,7 @@ def create_app(data_dir=None, admin_token=None, background=True):
             validate_manifest(manifest["path"], data)
         with service.lock:
             get("environment", body.environment_id)
-            existing = store.list("instance")
+            existing = reserved_instances(store)
             for other in existing:
                 if not other.get("monitoring_enabled", True) or other["state"] == "undeployed":
                     continue
@@ -266,7 +273,7 @@ def create_app(data_dir=None, admin_token=None, background=True):
         with service.lock:
             if body.environment_id:
                 get("environment", body.environment_id)
-            for other in store.list("instance"):
+            for other in reserved_instances(store):
                 if (
                     other.get("monitoring_enabled", True)
                     and other["state"] != "undeployed"
@@ -311,11 +318,65 @@ def create_app(data_dir=None, admin_token=None, background=True):
         get("instance", identifier)
         return public_instance(service.check(identifier))
 
+    def reconfigurable(identifier):
+        instance = get("instance", identifier)
+        if instance.get("origin") == "attached" or instance["state"] == "undeployed":
+            raise HTTPException(409, "此实例不具备 Panel 可管理的运行资源")
+        if instance["mode"] != "docker":
+            raise HTTPException(409, "免传包参数重部署当前仅支持 Docker")
+        return instance
+
+    @api.get("/instances/{identifier}/configuration")
+    def get_configuration(identifier: str):
+        instance = reconfigurable(identifier)
+        return JSONResponse(
+            {
+                "instance": public_instance(instance),
+                "configuration": readable_configuration(store, instance),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @api.post("/instances/{identifier}/redeploy", status_code=202)
+    def redeploy(identifier: str, body: RedeployInput):
+        with service.lock:
+            instance = reconfigurable(identifier)
+            if body.revision != instance.get("configuration_revision", 0):
+                raise HTTPException(409, "部署参数已变化，请关闭并重新打开后再提交")
+            if any(
+                j["instance_id"] == identifier and j["status"] in {"queued", "running"}
+                for j in store.list("job")
+            ):
+                raise HTTPException(409, "此实例已有进行中的操作")
+            for other in reserved_instances(store):
+                if (
+                    other["id"] == identifier
+                    or other["state"] == "undeployed"
+                    or not other.get("monitoring_enabled", True)
+                ):
+                    continue
+                same_env = other.get("environment_id") == instance["environment_id"]
+                if other["base_url"] == body.base_url and (
+                    body.access == other.get("access", "direct") == "direct" or same_env
+                ):
+                    raise HTTPException(409, "此服务地址已被监测")
+                if same_env and other["mode"] != "k8s" and other.get("port") == body.port:
+                    raise HTTPException(409, "该环境端口已被 Panel 中的实例占用")
+            store.patch(
+                "instance",
+                identifier,
+                requested_configuration=sealed_configuration(store, body),
+                configuration_revision=body.revision + 1,
+            )
+            return service.submit(identifier, "redeploy")
+
     @api.post("/instances/{identifier}/restart", status_code=202)
     def restart(identifier: str):
         instance = get("instance", identifier)
         if instance.get("origin") == "attached" or instance["state"] == "undeployed":
             raise HTTPException(409, "此实例不具备 Panel 可管理的运行资源")
+        if instance.get("redeploy_recovery"):
+            raise HTTPException(409, "上次重新部署尚待恢复，请重新部署或卸载以完成恢复")
         return service.submit(identifier, "restart")
 
     @api.get("/jobs")

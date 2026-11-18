@@ -105,21 +105,20 @@ test "$AVAILABLE" -ge {size + 64 * 1024**2} || {{ echo "Docker 数据目录空�
     )
 
 
-def docker_run_command(instance, image, directory):
+def docker_run_command(instance, image, directory, *, name=None, create=False, env_file=None):
     options = DockerOptions.model_validate(instance.get("docker", {}))
     restart = "no" if options.max_restarts == 0 else f"on-failure:{options.max_restarts}"
     args = [
         "docker",
-        "run",
-        "-d",
+        *(["create", "--pull", "never"] if create else ["run", "-d"]),
         "--name",
-        "mock-" + instance["id"],
+        name or "mock-" + instance["id"],
         "--label",
         LABEL + "=" + instance["id"],
         "--restart",
         restart,
         "--env-file",
-        directory + "/service.env",
+        env_file or directory + "/service.env",
         "-p",
         f"{instance['port']}:{options.container_port}",
     ]

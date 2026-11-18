@@ -14,6 +14,7 @@ from contract_server import app as mock_app
 
 from svc_panel.app import create_app
 from svc_panel.deploy import Deployer
+from svc_panel.reconfigure import DockerReconfigure
 
 
 def main():
@@ -84,6 +85,14 @@ def main():
         time.sleep(0.3)
 
     Deployer.run = simulate
+
+    def simulate_reconfigure(self, instance):
+        self.log("契约测试执行器：复用原镜像，应用新参数")
+        self.store.patch("instance", instance["id"], **instance["requested_configuration"])
+
+    DockerReconfigure.begin = simulate_reconfigure
+    DockerReconfigure.commit = lambda *args: None
+    DockerReconfigure.recover = lambda *args: False
     module = importlib.import_module("svc_panel.app")
     module.SSH = lambda *args: nullcontext(None)
     module.check_storage = lambda *args: {"available_bytes": 10**12, "required_bytes": 1024}

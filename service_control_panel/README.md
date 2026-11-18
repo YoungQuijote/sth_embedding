@@ -81,7 +81,20 @@ JSON 请求体最大 36 MiB（含 Base64），服务端检查实际图片格式/
 - K8s：SSH 环境必须是指定节点，且已有可用 kubeconfig/kubectl；校验节点 InternalIP 与主机地址匹配。支持 `docker load`、`ctr -n k8s.io images import`、`k3s ctr -n k8s.io images import`。多节点自动分发暂不支持。
 - K8s 清单只接受一个目标 Deployment，以及同 namespace 的 Service/ConfigMap/Secret/PVC；需要显式 nodeName 或 hostname nodeSelector、显式 Never/IfNotPresent 拉取策略。用户需配置业务参数、管理 token、数据持久化与访问入口，Panel 保留业务配置，添加实例归属标签；为保证卸载边界，拒绝覆盖已有同名对象。表单管理 token 必须与清单一致；K8s 中 MOCK_INSTANCE_ID 由清单指定，可与 Panel 的登记 ID 不同。
 - 访问地址单独填写；直连支持 HTTP/HTTPS，SSH 隧道 V1 支持 HTTP（可用目标主机 localhost 地址）。K8s 的 NodePort/Ingress 地址由清单决定，不自动沿用 32882。
-- 每实例同时只执行一个部署、重启、卸载或导出任务。失败时保留任务日志和远端资源用于诊断，不自动删除镜像、目录或 K8s 资源。Panel 重启后未完成任务标为“已中断”，不会自动重放可能已经执行的远程操作。
+- 每实例同时只执行一个部署、重启、重新部署、卸载或导出任务。失败时保留任务日志和远端资源用于诊断，不自动删除镜像、目录或 K8s 资源。Panel 重启后未完成任务标为“已中断”，不会自动重放可能已经执行的远程操作。
+
+## Docker 免传包重新部署
+
+点击 Docker 实例右侧循环箭头“重新部署实例”，会打开与新增实例相同的表单，并回填上次提交的参数：
+
+- 名称、环境、部署方式、目录、原部署包和镜像固定。
+- 可修改启动方式/ENTRYPOINT/CMD、容器监听端口、失败重启次数、环境变量、额外挂载、更多 Docker 参数，以及“03 服务连接”的暴露端口、访问方式、URL 和管理令牌。
+- 点击“保存参数并重新部署”，复用远端原镜像的不可变 ID 及 data/logs/traces，跳过部署包上传和镜像加载，也不从仓库拉取镜像。修改暴露端口后需同步修改服务访问 URL。
+- 新容器健康检查通过才删除旧容器；失败尝试恢复原容器和原生效配置，同时保留本次提交参数，方便再次修正。持久化目录保留，但不回滚新进程已经写入的数据；切换会短暂中断服务、清空内存会话。
+- 若 Panel 中断或 SSH 故障留下恢复记录，下次重新部署/卸载先处理恢复，再继续操作。远端资源归属发生变化时拒绝自动处理并在任务中报错。
+- 初次启动失败也可重部署，前提是原镜像 ID 与持久化目录可用；旧版本实例可从仍存在且归属正确的原容器获取镜像 ID。缺少资源时报错，不自动重新传包。
+
+本轮参数重部署支持 Panel 部署的 Docker 实例；裸机和 K8s 保留原重启行为，外部接入实例不开放远端生命周期操作。配置回填 API 仅管理员可用、禁止缓存；令牌和额外环境变量继续加密保存。旧 `POST /api/instances/{id}/restart` API 仍可用于不改配置的普通重启。
 
 ## 新增、移除与卸载
 
@@ -151,7 +164,7 @@ uv pip install --python service_control_panel/backend/.venv/bin/python -e './age
 service_control_panel/backend/.venv/bin/pytest service_control_panel/backend/tests/test_mock_integration.py
 ```
 
-可选 Docker 引擎测试：设置 `PANEL_DOCKER_TEST_IMAGE=<含实际 mock 包、Python、uvicorn 的测试镜像>`，运行 `backend/tests/test_docker_integration.py`；需要可用 Docker，且 daemon 能访问本机临时目录。测试使用真实启动/检查/停止/删除命令，本地传输替代 SSH；为兼容不同用户运行的 rootless daemon，临时持久化目录设置可写权限，仅写入测试数据。验证自定义入口、有限次重启和归属清理；不验证 SSH/SFTP、镜像传输/加载及 Docker 数据目录容量。测试创建并清理 UUID 容器/目录，保留指定镜像。未设置时跳过。
+可选 Docker 引擎测试：设置 `PANEL_DOCKER_TEST_IMAGE=<含实际 mock 包、Python、uvicorn 的测试镜像>`，运行 `backend/tests/test_docker_integration.py`；需要可用 Docker，且 daemon 能访问本机临时目录。测试使用真实启动/检查/停止/删除命令，本地传输替代 SSH；为兼容不同用户运行的 rootless daemon，临时持久化目录设置可写权限，仅写入测试数据。验证自定义入口、有限次重启、免传包参数重部署、错误命令恢复、数据保留和归属清理；不验证 SSH/SFTP、镜像传输/加载及 Docker 数据目录容量。测试创建并清理 UUID 容器/目录，保留指定镜像。未设置时跳过。
 
 ## 尚需环境验收
 

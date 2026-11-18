@@ -10,6 +10,7 @@ from pathlib import Path
 from .deploy import Deployer
 from .deployment_support import startup_diagnostics, undeploy
 from .monitoring import BuiltinMonitoringProvider
+from .reconfigure import DockerReconfigure
 from .remote import api_client, require_json
 
 
@@ -57,6 +58,15 @@ class Service:
     def safe_error(self, error, instance=None):
         message = str(error)
         if instance:
+            # Include pending and rollback credentials in redaction, never in job payloads.
+            for config in [
+                instance.get("requested_configuration"),
+                (instance.get("redeploy_recovery") or {}).get("old_configuration"),
+            ]:
+                if config:
+                    message = self.safe_error(
+                        message, {**config, "environment_id": instance.get("environment_id")}
+                    )
             message = message.replace(self.store.unseal(instance["admin_token"]), "[REDACTED]")
             env = self.store.get("environment", instance.get("environment_id"))
             if instance.get("docker_environment"):
@@ -171,11 +181,12 @@ class Service:
                 "error": None,
             }
             self.store.put("job", job)
-            if operation in {"deploy", "restart", "undeploy"}:
+            if operation in {"deploy", "restart", "redeploy", "undeploy"}:
                 instance = self.store.get("instance", instance_id)
                 instance["state"] = {
                     "deploy": "deploying",
                     "restart": "restarting",
+                    "redeploy": "redeploying",
                     "undeploy": "undeploying",
                 }[operation]
                 self.store.put("instance", instance)
@@ -204,11 +215,17 @@ class Service:
 
         job.update(status="running", started_at=time.time())
         self.store.put("job", job)
+        reconfigure = DockerReconfigure(self.store, log)
         try:
-            if job["operation"] in {"deploy", "restart"}:
-                Deployer(self.store, log, progress).run(
-                    instance, restart=job["operation"] == "restart"
-                )
+            if job["operation"] in {"deploy", "restart", "redeploy"}:
+                if job["operation"] == "redeploy":
+                    progress(stage="复用原镜像，应用新参数")
+                    reconfigure.begin(instance)
+                    instance = self.store.get("instance", instance["id"])
+                else:
+                    Deployer(self.store, log, progress).run(
+                        instance, restart=job["operation"] == "restart"
+                    )
                 log("等待服务就绪并验证管理协议")
                 progress(stage="等待服务就绪并验证管理协议")
                 deadline = time.monotonic() + 120
@@ -225,11 +242,15 @@ class Service:
                     raise RuntimeError(
                         "远程资源已启动，但健康检查失败：" + current.get("health_error", "unknown")
                     )
+                if job["operation"] == "redeploy":
+                    reconfigure.commit(instance)
                 with self.lock:
                     self.store.patch("instance", instance["id"], state="deployed")
                 self.store.resolve(instance["id"], "operation")
                 log("操作完成，实例已就绪")
             elif job["operation"] == "undeploy":
+                reconfigure.recover(instance)
+                instance = self.store.get("instance", instance["id"])
                 undeploy(self.store, instance, log)
                 self.store.resolve(instance["id"], "operation")
                 log("卸载完成，可移除监测记录")
@@ -237,9 +258,18 @@ class Service:
                 self.export(instance, job, log)
             job["status"] = "succeeded"
         except Exception as error:
+            instance = self.store.get("instance", instance["id"])
             job.update(status="failed", error=self.safe_error(error, instance))
+            if job["operation"] == "redeploy":
+                try:
+                    reconfigure.recover(instance)
+                except Exception as recovery_error:
+                    job["error"] += (
+                        "\n自动恢复未完成，请检查远端后重试重新部署或卸载："
+                        + self.safe_error(recovery_error, instance)
+                    )
             log(job["error"])
-            if job["operation"] in {"deploy", "restart", "undeploy"}:
+            if job["operation"] in {"deploy", "restart", "redeploy", "undeploy"}:
                 with self.lock:
                     self.store.patch("instance", instance["id"], state="failed")
             self.store.alert(instance["id"], "operation", job["error"])

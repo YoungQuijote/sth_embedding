@@ -236,6 +236,122 @@ test("Docker advanced parameters and uninstall confirmation", async ({
   await page.getByRole("button", { name: "取消", exact: true }).click();
 });
 
+test("redeploy prefills immutable identity and saves editable parameters without uploading", async ({
+  page,
+}) => {
+  const card = page
+    .locator(".instance-card")
+    .filter({ hasText: "QA · 契约测试" });
+  await card.getByTitle("重新部署实例", { exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "重新部署实例" });
+  await expect(dialog.getByLabel("实例名称", { exact: true })).toHaveValue(
+    "QA · 契约测试",
+  );
+  for (const label of [
+    "实例名称",
+    "远程环境",
+    "远程部署根目录",
+    "原部署包",
+    "原镜像（复用远端已加载版本）",
+  ]) {
+    await expect(dialog.getByLabel(label, { exact: true })).toBeDisabled();
+  }
+  await expect(dialog.locator('input[type="file"]')).toHaveCount(0);
+  await expect(dialog.getByLabel("暴露端口", { exact: true })).toHaveValue(
+    "32884",
+  );
+  await dialog.getByLabel("启动方式", { exact: true }).selectOption("custom");
+  await dialog.getByLabel("ENTRYPOINT（可选，可执行文件路径）").fill("python");
+  await dialog
+    .getByLabel("启动命令 / 参数（JSON 数组）")
+    .fill(
+      '["-m", "uvicorn", "agent_mock_service.app_service:mock_service_app"]',
+    );
+  await dialog.getByLabel("失败最多重启次数").fill("0");
+  await dialog
+    .getByText("环境变量、挂载与更多 Docker 参数", { exact: true })
+    .click();
+  await dialog
+    .getByLabel("环境变量（JSON 对象）")
+    .fill('{"LOG_LEVEL":"debug"}');
+  await dialog
+    .getByLabel("额外挂载（JSON 数组）")
+    .fill('[{"source":"/data/models","target":"/models","read_only":true}]');
+  await dialog
+    .getByLabel("Docker 参数（JSON 数组）")
+    .fill('["--memory", "256m"]');
+  await dialog.getByLabel("暴露端口", { exact: true }).fill("33111");
+  await dialog
+    .getByLabel("服务访问地址", { exact: true })
+    .fill("http://127.0.0.3:32883");
+  const uploadRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/artifacts") ||
+      request.url().includes("/storage?")
+    )
+      uploadRequests.push(request.url());
+  });
+  const submitted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/redeploy") && request.method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "保存参数并重新部署" }).click();
+  const payload = (await submitted).postDataJSON();
+  expect(payload.docker.environment).toEqual({ LOG_LEVEL: "debug" });
+  expect(payload).not.toHaveProperty("artifact_id");
+  expect(payload).not.toHaveProperty("environment_id");
+  await expect(page.locator(".task-log")).toContainText(
+    "操作完成，实例已就绪",
+    { timeout: 15000 },
+  );
+  expect(uploadRequests).toEqual([]);
+  await page.getByLabel("关闭").click();
+  await card.getByTitle("重新部署实例", { exact: true }).click();
+  await expect(dialog.getByLabel("启动方式", { exact: true })).toHaveValue(
+    "custom",
+  );
+  await expect(
+    dialog.getByLabel("ENTRYPOINT（可选，可执行文件路径）"),
+  ).toHaveValue("python");
+  await expect(dialog.getByLabel("失败最多重启次数")).toHaveValue("0");
+  await expect(dialog.getByLabel("暴露端口", { exact: true })).toHaveValue(
+    "33111",
+  );
+  await expect(dialog.getByLabel("服务访问地址", { exact: true })).toHaveValue(
+    "http://127.0.0.3:32883",
+  );
+  await dialog
+    .getByText("环境变量、挂载与更多 Docker 参数", { exact: true })
+    .click();
+  expect(
+    JSON.parse(await dialog.getByLabel("环境变量（JSON 对象）").inputValue()),
+  ).toEqual({ LOG_LEVEL: "debug" });
+  expect(
+    JSON.parse(await dialog.getByLabel("额外挂载（JSON 数组）").inputValue()),
+  ).toEqual(payload.docker.mounts);
+  expect(
+    JSON.parse(
+      await dialog.getByLabel("Docker 参数（JSON 数组）").inputValue(),
+    ),
+  ).toEqual(["--memory", "256m"]);
+  await page.screenshot({
+    path: "test-results/redeploy-desktop.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBeTruthy();
+  await page.screenshot({
+    path: "test-results/redeploy-mobile.png",
+    fullPage: true,
+  });
+  await dialog.getByLabel("关闭").click();
+});
+
 test("delete an unused environment and explain in-use dependencies", async ({
   page,
 }) => {
